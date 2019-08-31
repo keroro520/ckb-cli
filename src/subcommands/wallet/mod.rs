@@ -8,15 +8,15 @@ use std::time::Duration;
 
 use ckb_crypto::secp::SECP256K1;
 use ckb_hash::blake2b_256;
+use ckb_jsonrpc_types::{BlockNumber, CellWithStatus, HeaderView};
+use ckb_resource::CODE_HASH_DAO;
+use ckb_types::packed::CellInput;
 use ckb_types::{
     bytes::Bytes,
     core::{service::Request, BlockView, TransactionView},
     prelude::*,
     H160, H256,
 };
-use ckb_types::packed::CellInput;
-use clap::{App, Arg, ArgMatches, SubCommand};
-use ckb_jsonrpc_types::{CellWithStatus, BlockNumber, HeaderView, TransactionView, TransactionWithStatus};
 use clap::{App, ArgMatches, SubCommand};
 use faster_hex::hex_string;
 
@@ -32,8 +32,7 @@ use crate::utils::{
 };
 use ckb_index::{with_index_db, IndexDatabase, LiveCellInfo};
 use ckb_sdk::{
-    blake2b_args,
-    build_witness_with_key, serialize_signature,
+    blake2b_args, build_witness_with_key, serialize_signature,
     wallet::{KeyStore, KeyStoreError},
     Address, GenesisInfo, HttpRpcClient, NetworkType, TransferTransactionBuilder,
     MIN_SECP_CELL_CAPACITY, ONE_CKB,
@@ -206,19 +205,16 @@ impl<'a> WalletSubCommand<'a> {
 
         check_capacity(capacity, to_data.len())?;
         let genesis_info = self.genesis_info()?;
-        let secp_code_hash = genesis_info.secp_code_hash();
+        let secp_type_hash = genesis_info.secp_type_hash();
 
         // For check index database is ready
         self.with_db(|_| ())?;
         let index_dir = self.index_dir.clone();
-        let genesis_hash = genesis_info.header().hash().clone();
+        let genesis_hash = genesis_info.header().hash();
         let genesis_info_clone = genesis_info.clone();
         let mut total_capacity = 0;
         let terminator = |_, info: &LiveCellInfo| {
-            let out_point = OutPoint {
-                cell: Some(info.out_point.clone()),
-                block_hash: None,
-            };
+            let out_point = info.out_point();
             let resp: CellWithStatus = self
                 .rpc_client
                 .get_live_cell(out_point.into())
@@ -231,24 +227,24 @@ impl<'a> WalletSubCommand<'a> {
                 (false, false)
             }
         };
-        let infos: Vec<LiveCellInfo> = with_index_db(&index_dir, genesis_hash, |backend, cf| {
-            let db = IndexDatabase::from_db(
-                backend,
-                cf,
-                NetworkType::TestNet,
-                genesis_info_clone,
-                false,
-            )?;
-            Ok(db.get_live_cells_by_lock(
-                from_address
-                    .lock_script(secp_code_hash.clone())
-                    .hash()
-                    .clone(),
-                None,
-                terminator,
-            ))
-        })
-        .map_err(|err| err.to_string())?;
+        let infos: Vec<LiveCellInfo> =
+            with_index_db(&index_dir, genesis_hash.unpack(), |backend, cf| {
+                let db = IndexDatabase::from_db(
+                    backend,
+                    cf,
+                    NetworkType::TestNet,
+                    genesis_info_clone,
+                    false,
+                )?;
+                Ok(db.get_live_cells_by_lock(
+                    from_address
+                        .lock_script(secp_type_hash.clone())
+                        .calc_script_hash(),
+                    None,
+                    terminator,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
 
         if total_capacity < capacity {
             return Err(format!(
@@ -257,10 +253,7 @@ impl<'a> WalletSubCommand<'a> {
                 total_capacity,
             ));
         }
-        let inputs = infos
-            .iter()
-            .map(LiveCellInfo::core_input)
-            .collect::<Vec<_>>();
+        let inputs = infos.iter().map(LiveCellInfo::input).collect::<Vec<_>>();
         let mut tx_args = TransferTransactionBuilder::new(
             &from_address,
             total_capacity,
@@ -313,19 +306,16 @@ impl<'a> WalletSubCommand<'a> {
 
         check_capacity(capacity, to_data.len())?;
         let genesis_info = self.genesis_info()?;
-        let secp_code_hash = genesis_info.secp_code_hash();
+        let secp_type_hash = genesis_info.secp_type_hash();
 
         // For check index database is ready
         self.with_db(|_| ())?;
         let index_dir = self.index_dir.clone();
-        let genesis_hash = genesis_info.header().hash().clone();
+        let genesis_hash = genesis_info.header().hash();
         let genesis_info_clone = genesis_info.clone();
         let mut total_capacity = 0;
         let terminator = |_, info: &LiveCellInfo| {
-            let out_point = OutPoint {
-                cell: Some(info.out_point.clone()),
-                block_hash: None,
-            };
+            let out_point = info.out_point();
             let resp: CellWithStatus = self
                 .rpc_client
                 .get_live_cell(out_point.into())
@@ -338,25 +328,25 @@ impl<'a> WalletSubCommand<'a> {
                 (false, false)
             }
         };
-        let infos: Vec<LiveCellInfo> = with_index_db(&index_dir, genesis_hash, |backend, cf| {
-            let db = IndexDatabase::from_db(
-                backend,
-                cf,
-                NetworkType::TestNet,
-                genesis_info_clone,
-                false,
-            )?;
+        let infos: Vec<LiveCellInfo> =
+            with_index_db(&index_dir, genesis_hash.unpack(), |backend, cf| {
+                let db = IndexDatabase::from_db(
+                    backend,
+                    cf,
+                    NetworkType::TestNet,
+                    genesis_info_clone,
+                    false,
+                )?;
 
-            Ok(db.get_live_cells_by_lock(
-                from_address
-                    .lock_script(secp_code_hash.clone())
-                    .hash()
-                    .clone(),
-                None,
-                terminator,
-            ))
-        })
-        .map_err(|err| err.to_string())?;
+                Ok(db.get_live_cells_by_lock(
+                    from_address
+                        .lock_script(secp_type_hash.clone())
+                        .calc_script_hash(),
+                    None,
+                    terminator,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
 
         if total_capacity < capacity {
             return Err(format!(
@@ -366,10 +356,7 @@ impl<'a> WalletSubCommand<'a> {
             ));
         }
 
-        let inputs = infos
-            .iter()
-            .map(LiveCellInfo::core_input)
-            .collect::<Vec<_>>();
+        let inputs = infos.iter().map(LiveCellInfo::input).collect::<Vec<_>>();
         let mut tx_args = TransferTransactionBuilder::new(
             &from_address,
             total_capacity,
@@ -422,19 +409,16 @@ impl<'a> WalletSubCommand<'a> {
 
         check_capacity(capacity, to_data.len())?;
         let genesis_info = self.genesis_info()?;
-        let secp_code_hash = genesis_info.secp_code_hash();
+        let secp_type_hash = genesis_info.secp_type_hash();
 
         // For check index database is ready
         self.with_db(|_| ())?;
         let index_dir = self.index_dir.clone();
-        let genesis_hash = genesis_info.header().hash().clone();
+        let genesis_hash = genesis_info.header().hash();
         let genesis_info_clone = genesis_info.clone();
         let mut total_capacity = 0;
         let terminator = |_, info: &LiveCellInfo| {
-            let out_point = OutPoint {
-                cell: Some(info.out_point.clone()),
-                block_hash: None,
-            };
+            let out_point = info.out_point();
             let resp: CellWithStatus = self
                 .rpc_client
                 .get_live_cell(out_point.into())
@@ -447,24 +431,24 @@ impl<'a> WalletSubCommand<'a> {
                 (false, false)
             }
         };
-        let infos: Vec<LiveCellInfo> = with_index_db(&index_dir, genesis_hash, |backend, cf| {
-            let db = IndexDatabase::from_db(
-                backend,
-                cf,
-                NetworkType::TestNet,
-                genesis_info_clone,
-                false,
-            )?;
-            Ok(db.get_live_cells_by_lock(
-                from_address
-                    .lock_script(secp_code_hash.clone())
-                    .hash()
-                    .clone(),
-                None,
-                terminator,
-            ))
-        })
-        .map_err(|err| err.to_string())?;
+        let infos: Vec<LiveCellInfo> =
+            with_index_db(&index_dir, genesis_hash.unpack(), |backend, cf| {
+                let db = IndexDatabase::from_db(
+                    backend,
+                    cf,
+                    NetworkType::TestNet,
+                    genesis_info_clone,
+                    false,
+                )?;
+                Ok(db.get_live_cells_by_lock(
+                    from_address
+                        .lock_script(secp_type_hash.clone())
+                        .calc_script_hash(),
+                    None,
+                    terminator,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
 
         if total_capacity < capacity {
             return Err(format!(
@@ -533,7 +517,7 @@ impl<'a> WalletSubCommand<'a> {
 
     fn send_transaction(
         &mut self,
-        transaction: Transaction,
+        transaction: TransactionView,
         format: OutputFormat,
         color: bool,
     ) -> Result<String, String> {
@@ -545,7 +529,7 @@ impl<'a> WalletSubCommand<'a> {
 
         let resp = self
             .rpc_client
-            .send_transaction((&transaction).into())
+            .send_transaction(transaction.data().into())
             .call()
             .map_err(|err| format!("Send transaction error: {}", err))?;
         Ok(resp.render(format, color))
@@ -585,9 +569,9 @@ impl<'a> CliSubCommand for WalletSubCommand<'a> {
                 let lock_hash = if let Some(lock_hash) = lock_hash_opt {
                     lock_hash
                 } else {
-                    let secp_code_hash = self.genesis_info()?.secp_code_hash().clone();
+                    let secp_type_hash = self.genesis_info()?.secp_type_hash().clone();
                     let address = get_address(m)?;
-                    address.lock_script(secp_code_hash).hash().clone()
+                    address.lock_script(secp_type_hash).calc_script_hash()
                 };
                 let capacity = self.with_db(|db| {
                     let infos_by_lock = db
@@ -595,7 +579,7 @@ impl<'a> CliSubCommand for WalletSubCommand<'a> {
                         .into_iter()
                         .collect::<HashSet<_>>();
                     let infos_by_code = db
-                        .get_live_cells_by_code(DAO_CODE_HASH, Some(0), |_, _| (false, true))
+                        .get_live_cells_by_code(CODE_HASH_DAO, Some(0), |_, _| (false, true))
                         .into_iter()
                         .collect::<HashSet<_>>();
                     infos_by_lock
@@ -745,7 +729,8 @@ fn is_live_cell(cell: &CellWithStatus) -> bool {
 
 fn is_secp_cell(cell: &CellWithStatus) -> bool {
     if let Some(ref output) = cell.cell {
-        if output.data.is_empty() && output.type_.is_none() {
+        // FIXME Check if output.data.is_empty()
+        if output.type_.is_none() {
             return true;
         } else {
             log::info!(
@@ -763,7 +748,7 @@ fn is_dao_cell(cell: &CellWithStatus) -> bool {
         return output
             .type_
             .as_ref()
-            .map(|script| script.code_hash == DAO_CODE_HASH)
+            .map(|script| script.code_hash == CODE_HASH_DAO)
             .unwrap_or(false);
     }
 
@@ -785,16 +770,13 @@ fn build_dao_inputs(
 
     let mut inputs = Vec::with_capacity(infos.len());
     for info in infos.iter() {
-        let previous_tx_hash = info.out_point.tx_hash.to_owned();
-        let previous_tx: TransactionWithStatus = rpc_client
-            .get_transaction(previous_tx_hash.to_owned())
-            .call()
-            .map_err(|err| format!("Send get_transaction error: {}", err))?
-            .0
-            .expect("transaction of a live cell exist");
-        let mut live_cell_info = LiveCellInfo::core_input(info);
-        live_cell_info.since = dao_minimal_since;
-        live_cell_info.previous_output.block_hash = previous_tx.tx_status.block_hash;
+        let live_cell_info = {
+            let live_cell_info = LiveCellInfo::input(info);
+            live_cell_info
+                .as_builder()
+                .since(dao_minimal_since.pack())
+                .build()
+        };
         inputs.push(live_cell_info);
     }
     Ok(inputs)
