@@ -76,6 +76,11 @@ impl<'a> UtilSubCommand<'a> {
         SubCommand::with_name(name)
             .about("Utilities")
             .subcommands(vec![
+                SubCommand::with_name("addr-info")
+                    .about(
+                        "Print different types of address",
+                    )
+                    .arg(arg_address.clone().required(true)),
                 SubCommand::with_name("key-info")
                     .about(
                         "Show public information of a secp256k1 private key (from file) or public key",
@@ -112,6 +117,17 @@ impl<'a> CliSubCommand for UtilSubCommand<'a> {
         color: bool,
     ) -> Result<String, String> {
         match matches.subcommand() {
+            ("addr-info", Some(m)) => {
+                let address = get_address(m)?;
+                let old_address = OldAddress::new_default(address.hash().clone());
+                let resp = serde_json::json!({
+                    "new_ckt_address": address.to_string(NetworkType::TestNet),
+                    "new_ckb_address": address.to_string(NetworkType::MainNet),
+                    "old_ckt_address": old_address.to_string(NetworkType::TestNet),
+                    "old_ckb_address": old_address.to_string(NetworkType::MainNet),
+                });
+                Ok(resp.render(format, color))
+            },
             ("key-info", Some(m)) => {
                 let privkey_opt: Option<secp256k1::SecretKey> =
                     PrivkeyPathParser.from_matches_opt(m, "privkey-path", false)?;
@@ -131,7 +147,6 @@ impl<'a> CliSubCommand for UtilSubCommand<'a> {
                     None => get_address(m)?,
                 };
                 let old_address = OldAddress::new_default(address.hash().clone());
-
                 let genesis_info = get_genesis_info(&mut self.genesis_info, self.rpc_client)?;
                 let secp_type_hash = genesis_info.secp_type_hash();
                 println!(
