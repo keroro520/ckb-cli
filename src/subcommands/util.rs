@@ -17,6 +17,8 @@ use crate::utils::{
     other::{get_address, get_genesis_info},
     printer::{OutputFormat, Printable},
 };
+use std::fs::File;
+use std::io::{BufReader, BufRead, Write};
 
 pub struct UtilSubCommand<'a> {
     rpc_client: &'a mut HttpRpcClient,
@@ -62,6 +64,11 @@ impl<'a> UtilSubCommand<'a> {
             .takes_value(true)
             .required(true)
             .validator(|input| FilePathParser::new(true).validate(input));
+        let file_path_arg = Arg::with_name("file")
+            .long("file")
+            .takes_value(true)
+            .required(true)
+            .validator(|input| FilePathParser::new(true).validate(input));
         let binary_hex_arg = Arg::with_name("binary-hex")
             .long("binary-hex")
             .takes_value(true)
@@ -76,6 +83,11 @@ impl<'a> UtilSubCommand<'a> {
         SubCommand::with_name(name)
             .about("Utilities")
             .subcommands(vec![
+                SubCommand::with_name("convert-addr")
+                    .about(
+                        "convert addresses from file",
+                    )
+                    .arg(file_path_arg.clone().required(true)),
                 SubCommand::with_name("addr-info")
                     .about(
                         "Print different types of address",
@@ -109,6 +121,32 @@ impl<'a> UtilSubCommand<'a> {
     }
 }
 
+fn batch_addr_info(ifile: &str) -> String {
+    let ofile_name = format!("{}.out", ifile);
+    let mut ofile = File::create(&ofile_name).expect("open output file");
+    let parser = AddressParser{};
+    BufReader::new(File::open(ifile).expect("open input file"))
+        .lines()
+        .for_each(|line| {
+            if let Ok(line) = line {
+                let splits = line.split(',').collect::<Vec<_>>();
+                if splits.len() < 3 {
+                    return;
+                }
+
+                let addr = &splits[0];
+                if (addr.len() != 46 && addr.len() != 50) || &addr[0..2] != "ck" {
+                    return;
+                }
+
+                let addr = parser.parse(addr).expect("parse addr");
+                writeln!(ofile, "{},{}", addr.to_string(NetworkType::MainNet), splits[1..].join(",")).unwrap();
+            }
+        });
+
+    ofile_name
+}
+
 impl<'a> CliSubCommand for UtilSubCommand<'a> {
     fn process(
         &mut self,
@@ -117,6 +155,15 @@ impl<'a> CliSubCommand for UtilSubCommand<'a> {
         color: bool,
     ) -> Result<String, String> {
         match matches.subcommand() {
+            ("convert-addr", Some(m)) => {
+                let ifile = m.value_of("file").expect("original file is required");
+                let ofile = batch_addr_info(ifile);
+                let resp = serde_json::json!({
+                    "input": ifile,
+                    "output": ofile,
+                });
+                Ok(resp.render(format, color))
+            },
             ("addr-info", Some(m)) => {
                 let address = get_address(m)?;
                 let old_address = OldAddress::new_default(address.hash().clone());
