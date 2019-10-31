@@ -122,6 +122,7 @@ impl<'a> UtilSubCommand<'a> {
 }
 
 fn batch_addr_info(ifile: &str) -> String {
+    let is_epoch_reward_file = ifile.contains("epoch_reward");
     let ofile_name = format!("{}.out", ifile);
     let mut ofile = File::create(&ofile_name).expect("open output file");
     let parser = AddressParser{};
@@ -134,13 +135,21 @@ fn batch_addr_info(ifile: &str) -> String {
                     return;
                 }
 
-                let addr = &splits[0];
+                let addr = if is_epoch_reward_file {
+                    &splits[1]
+                } else {
+                    &splits[0]
+                };
                 if (addr.len() != 46 && addr.len() != 50) || &addr[0..2] != "ck" {
                     return;
                 }
-
                 let addr = parser.parse(addr).expect("parse addr");
-                writeln!(ofile, "{},{}", addr.to_string(NetworkType::MainNet), splits[1..].join(",")).unwrap();
+
+                if is_epoch_reward_file {
+                    writeln!(ofile, "{},{},{}", splits[0], addr.to_string(NetworkType::MainNet), splits[2..].join(",")).unwrap();
+                } else {
+                    writeln!(ofile, "{},{}", addr.to_string(NetworkType::MainNet), splits[1..].join(",")).unwrap();
+                }
             }
         });
 
