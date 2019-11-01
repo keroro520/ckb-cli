@@ -123,7 +123,7 @@ impl<'a> UtilSubCommand<'a> {
 
 fn batch_addr_info(ifile: &str) -> String {
     let is_epoch_reward_file = ifile.contains("epoch_reward");
-    let ofile_name = format!("{}.out", ifile);
+    let ofile_name = format!("{}.out.csv", ifile);
     let mut ofile = File::create(&ofile_name).expect("open output file");
     let parser = AddressParser{};
     BufReader::new(File::open(ifile).expect("open input file"))
@@ -131,10 +131,6 @@ fn batch_addr_info(ifile: &str) -> String {
         .for_each(|line| {
             if let Ok(line) = line {
                 let splits = line.split(',').collect::<Vec<_>>();
-//                if splits.len() < 3 {
-//                    return;
-//                }
-
                 let addr = if is_epoch_reward_file {
                     &splits[1]
                 } else {
@@ -143,9 +139,9 @@ fn batch_addr_info(ifile: &str) -> String {
                 if (addr.len() != 46 && addr.len() != 50) || &addr[0..2] != "ck" {
                     return;
                 }
-                let addr = parser.parse(addr).expect("parse addr");
+                let parsed = parser.parse(addr).expect("parse addr");
 
-                writeln!(ofile, "{},{}", splits[0], addr.to_string(NetworkType::MainNet)).unwrap();
+                writeln!(ofile, "{},{}", addr, parsed.to_string(NetworkType::MainNet)).unwrap();
 //                if is_epoch_reward_file {
 //                    writeln!(ofile, "{},{},{}", splits[0], addr.to_string(NetworkType::MainNet), splits[2..].join(",")).unwrap();
 //                } else {
