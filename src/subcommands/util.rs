@@ -131,9 +131,9 @@ fn batch_addr_info(ifile: &str) -> String {
         .for_each(|line| {
             if let Ok(line) = line {
                 let splits = line.split(',').collect::<Vec<_>>();
-                if splits.len() < 3 {
-                    return;
-                }
+//                if splits.len() < 3 {
+//                    return;
+//                }
 
                 let addr = if is_epoch_reward_file {
                     &splits[1]
@@ -145,11 +145,12 @@ fn batch_addr_info(ifile: &str) -> String {
                 }
                 let addr = parser.parse(addr).expect("parse addr");
 
-                if is_epoch_reward_file {
-                    writeln!(ofile, "{},{},{}", splits[0], addr.to_string(NetworkType::MainNet), splits[2..].join(",")).unwrap();
-                } else {
-                    writeln!(ofile, "{},{}", addr.to_string(NetworkType::MainNet), splits[1..].join(",")).unwrap();
-                }
+                writeln!(ofile, "{},{}", splits[0], addr.to_string(NetworkType::MainNet)).unwrap();
+//                if is_epoch_reward_file {
+//                    writeln!(ofile, "{},{},{}", splits[0], addr.to_string(NetworkType::MainNet), splits[2..].join(",")).unwrap();
+//                } else {
+//                    writeln!(ofile, "{},{}", addr.to_string(NetworkType::MainNet), splits[1..].join(",")).unwrap();
+//                }
             }
         });
 
