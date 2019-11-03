@@ -93,6 +93,11 @@ impl<'a> UtilSubCommand<'a> {
                         "Print different types of address",
                     )
                     .arg(arg_address.clone().required(true)),
+                SubCommand::with_name("lock-arg-info")
+                    .about(
+                        "Print different types of address by lock-arg",
+                    )
+                    .arg(arg_lock_arg.clone().required(true)),
                 SubCommand::with_name("key-info")
                     .about(
                         "Show public information of a secp256k1 private key (from file) or public key",
@@ -119,6 +124,37 @@ impl<'a> UtilSubCommand<'a> {
                     .arg(binary_hex_arg.clone().help("Script binary hex")),
             ])
     }
+}
+
+fn batch_lock_arg_info(ifile: &str) -> String {
+    let is_epoch_reward_file = ifile.contains("epoch_reward");
+    let ofile_name = format!("{}.out.csv", ifile);
+    let mut ofile = File::create(&ofile_name).expect("open output file");
+    let parser = FixedHashParser::<H160>::default();
+    BufReader::new(File::open(ifile).expect("open input file"))
+        .lines()
+        .for_each(|line| {
+            if let Ok(line) = line {
+                let splits = line.split(',').collect::<Vec<_>>();
+                let lock_arg= &splits[0];
+                let lock_arg: H160 = parser.parse(lock_arg).expect("parse addr");
+                let parsed = Address::from_lock_arg(&lock_arg[..]).unwrap();
+
+                writeln!(
+                    ofile,
+                    "{},{}",
+                    parsed.to_string(NetworkType::MainNet),
+                    splits[1],
+                ).unwrap();
+//                if is_epoch_reward_file {
+//                    writeln!(ofile, "{},{},{}", splits[0], addr.to_string(NetworkType::MainNet), splits[2..].join(",")).unwrap();
+//                } else {
+//                    writeln!(ofile, "{},{}", addr.to_string(NetworkType::MainNet), splits[1..].join(",")).unwrap();
+//                }
+            }
+        });
+
+    ofile_name
 }
 
 fn batch_addr_info(ifile: &str) -> String {
@@ -163,7 +199,8 @@ impl<'a> CliSubCommand for UtilSubCommand<'a> {
         match matches.subcommand() {
             ("convert-addr", Some(m)) => {
                 let ifile = m.value_of("file").expect("original file is required");
-                let ofile = batch_addr_info(ifile);
+                let ofile = batch_lock_arg_info(ifile);
+                // let ofile = batch_addr_info(ifile);
                 let resp = serde_json::json!({
                     "input": ifile,
                     "output": ofile,
@@ -171,6 +208,17 @@ impl<'a> CliSubCommand for UtilSubCommand<'a> {
                 Ok(resp.render(format, color))
             },
             ("addr-info", Some(m)) => {
+                let address = get_address(m)?;
+                let old_address = OldAddress::new_default(address.hash().clone());
+                let resp = serde_json::json!({
+                    "new_ckt_address": address.to_string(NetworkType::TestNet),
+                    "new_ckb_address": address.to_string(NetworkType::MainNet),
+                    "old_ckt_address": old_address.to_string(NetworkType::TestNet),
+                    "old_ckb_address": old_address.to_string(NetworkType::MainNet),
+                });
+                Ok(resp.render(format, color))
+            },
+            ("lock-arg-info", Some(m)) => {
                 let address = get_address(m)?;
                 let old_address = OldAddress::new_default(address.hash().clone());
                 let resp = serde_json::json!({
