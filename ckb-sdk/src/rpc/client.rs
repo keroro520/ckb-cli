@@ -1,7 +1,8 @@
 use ckb_jsonrpc_types::{
-    BannedAddr, BlockNumber, BlockReward, BlockView, CellOutputWithOutPoint, CellTransaction,
-    CellWithStatus, ChainInfo, EpochNumber, EpochView, HeaderView, LiveCell, LockHashIndexState,
-    Node, OutPoint, PeerState, Timestamp, Transaction, TransactionWithStatus, TxPoolInfo, Uint64,
+    BannedAddr, BlockNumber, BlockReward, BlockView, Capacity, CellOutputWithOutPoint,
+    CellTransaction, CellWithStatus, ChainInfo, EpochNumber, EpochView, HeaderView, LiveCell,
+    LockHashIndexState, Node, OutPoint, PeerState, Timestamp, Transaction, TransactionWithStatus,
+    TxPoolInfo, Uint64,
 };
 use jsonrpc_client_core::{expand_params, jsonrpc_client};
 use jsonrpc_client_http::{HttpHandle, HttpTransport};
@@ -108,6 +109,9 @@ jsonrpc_client!(pub struct RpcClient {
     pub fn add_node(&mut self, peer_id: String, address: String) -> RpcRequest<()>;
     pub fn remove_node(&mut self, peer_id: String) -> RpcRequest<()>;
     pub fn broadcast_transaction(&mut self, tx: Transaction) -> RpcRequest<H256>;
+
+    // Experiment
+    pub fn calculate_dao_maximum_withdraw(&mut self, out_point: OutPoint, block_hash: H256) -> RpcRequest<Capacity>;
 });
 
 impl RpcClient<HttpHandle> {
