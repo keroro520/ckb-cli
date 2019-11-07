@@ -1,4 +1,6 @@
 pub mod account;
+pub mod dao;
+pub mod functional;
 pub mod mock_tx;
 pub mod rpc;
 #[cfg(unix)]
@@ -10,6 +12,7 @@ pub mod wallet;
 pub use self::tui::TuiSubCommand;
 
 pub use account::AccountSubCommand;
+pub use dao::DAOSubCommand;
 pub use mock_tx::MockTxSubCommand;
 pub use rpc::RpcSubCommand;
 pub use util::UtilSubCommand;
