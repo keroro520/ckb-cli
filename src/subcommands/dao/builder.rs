@@ -10,7 +10,6 @@ use ckb_types::{
 };
 use std::collections::HashSet;
 
-// TODO Allow tx_fee != 0
 // NOTE: We assume all inputs from same account
 #[derive(Debug)]
 pub(crate) struct DAOBuilder {
@@ -92,19 +91,8 @@ impl DAOBuilder {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let witnesses = deposit_txo_headers
-            .iter()
-            .map(|(_, _, header)| {
-                let index = header_deps
-                    .iter()
-                    .position(|hash| hash == &header.hash())
-                    .unwrap() as u64;
-                WitnessArgs::new_builder()
-                    .input_type(Some(Bytes::from(index.to_le_bytes().to_vec())).pack())
-                    .build()
-                    .as_bytes()
-                    .pack()
-            })
+        let witnesses = (0..inputs.len())
+            .map(|_| WitnessArgs::default().as_bytes().pack())
             .collect::<Vec<_>>();
         let tx = TransactionBuilder::default()
             .inputs(inputs)
