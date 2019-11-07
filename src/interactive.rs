@@ -12,9 +12,10 @@ use rustyline::error::ReadlineError;
 use rustyline::{Cmd, CompletionType, Config, EditMode, Editor, KeyPress};
 use serde_json::json;
 
+use crate::subcommands::functional::{ChainClient, IndexClient};
 use crate::subcommands::{
-    AccountSubCommand, CliSubCommand, IndexController, IndexRequest, MockTxSubCommand,
-    RpcSubCommand, UtilSubCommand, WalletSubCommand,
+    AccountSubCommand, CliSubCommand, DAOSubCommand, IndexController, IndexRequest,
+    MockTxSubCommand, RpcSubCommand, UtilSubCommand, WalletSubCommand,
 };
 use crate::utils::{
     completer::CkbCompleter,
@@ -346,6 +347,21 @@ impl InteractiveEnv {
                             true,
                         )
                         .process(&sub_matches, format, color, debug)?;
+                        println!("{}", output);
+                        Ok(())
+                    }
+                    ("dao", Some(sub_matches)) => {
+                        let genesis_info = self.genesis_info()?;
+                        let mut chain_client =
+                            ChainClient::new(&mut self.rpc_client, Some(genesis_info));
+                        let mut index_client = IndexClient::new(
+                            &mut self.key_store,
+                            self.index_dir.clone(),
+                            self.index_controller.clone(),
+                            true,
+                        );
+                        let output = DAOSubCommand::new(&mut chain_client, &mut index_client)
+                            .process(&sub_matches, format, color, debug)?;
                         println!("{}", output);
                         Ok(())
                     }
