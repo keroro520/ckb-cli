@@ -221,7 +221,7 @@ impl DAOBuilder {
                 let block_hash = tx_status
                     .tx_status
                     .block_hash
-                    .ok_or("Tx is not on-chain".to_owned())?;
+                    .ok_or_else(|| "Tx is not on-chain".to_owned())?;
                 chain_client
                     .get_header(block_hash.pack())?
                     .expect("checked above")
@@ -231,7 +231,7 @@ impl DAOBuilder {
             let output = tx
                 .outputs()
                 .get(output_index as usize)
-                .ok_or("OutPoint is out of index".to_owned())?;
+                .ok_or_else(|| "OutPoint is out of index".to_owned())?;
             ret.push((out_point, output, header))
         }
         Ok(ret)

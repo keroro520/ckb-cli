@@ -26,20 +26,48 @@ mod command;
 // TODO check whether output data is empty before spending
 // TODO Allow transaction change
 
+pub(crate) struct TransactArgs {
+    pub(crate) privkey: Option<PrivkeyWrapper>,
+    pub(crate) account: Option<H160>,
+    pub(crate) address: Address,
+    pub(crate) with_password: bool,
+    pub(crate) capacity: u64,
+    pub(crate) tx_fee: u64,
+}
+
+impl TransactArgs {
+    pub(crate) fn from_matches(m: &ArgMatches) -> Result<Self, String> {
+        let privkey: Option<PrivkeyWrapper> =
+            PrivkeyPathParser.from_matches_opt(m, "privkey-path", false)?;
+        let account: Option<H160> =
+            FixedHashParser::<H160>::default().from_matches_opt(m, "from-account", false)?;
+        let address = if let Some(privkey) = privkey.as_ref() {
+            let pubkey = secp256k1::PublicKey::from_secret_key(&SECP256K1, privkey);
+            let pubkey_hash = blake2b_256(&pubkey.serialize()[..]);
+            Address::from_lock_arg(&pubkey_hash[0..20])?
+        } else {
+            Address::from_lock_arg(account.as_ref().unwrap().as_bytes())?
+        };
+        let capacity: u64 = CapacityParser.from_matches(m, "capacity")?;
+        let tx_fee: u64 = CapacityParser.from_matches(m, "tx-fee")?;
+        let with_password = m.is_present("with-password");
+        Ok(Self {
+            privkey,
+            account,
+            address,
+            with_password,
+            capacity,
+            tx_fee,
+        })
+    }
+}
+
 pub struct DAOSubCommand<'a> {
     chain_client: &'a mut ChainClient<'a>,
     index_client: &'a mut IndexClient<'a>,
     // output_format, color, debug
     output_style: (OutputFormat, bool, bool),
-    // from_privkey, from_account, from_address, with_password, capacity, tx_fee
-    transfer_args: Option<(
-        Option<PrivkeyWrapper>,
-        Option<H160>,
-        Address,
-        bool,
-        u64,
-        u64,
-    )>,
+    transact_args: Option<TransactArgs>,
 }
 
 impl<'a> DAOSubCommand<'a> {
@@ -51,7 +79,7 @@ impl<'a> DAOSubCommand<'a> {
             chain_client,
             index_client,
             output_style: (OutputFormat::Yaml, true, true),
-            transfer_args: None,
+            transact_args: None,
         }
     }
 
@@ -63,17 +91,14 @@ impl<'a> DAOSubCommand<'a> {
         debug: bool,
     ) -> Result<String, String> {
         self.output_style = (format, color, debug);
-        self.transfer_args = Some(transfer_args(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m)?);
         self.check_db_ready()?;
 
         let genesis_info = self.chain_client.genesis_info()?;
         let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
-        let from_address = self.transfer_args.as_ref().unwrap().2.clone();
-        let target_capacity = {
-            let transfer_args = self.transfer_args.as_ref().expect("checked above");
-            transfer_args.4 + transfer_args.5
-        };
+        let from_address = self.transact_args().address.clone();
+        let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
         let mut take_capacity = 0;
         let mut enough = false;
         let chain_client = &mut self.chain_client;
@@ -131,23 +156,19 @@ impl<'a> DAOSubCommand<'a> {
         debug: bool,
     ) -> Result<String, String> {
         self.output_style = (format, color, debug);
-        self.transfer_args = Some(transfer_args(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m)?);
         self.check_db_ready()?;
 
         {
-            let transfer_args = self.transfer_args.as_ref().expect("checked above");
-            let tx_fee = transfer_args.5;
+            let tx_fee = self.transact_args().tx_fee;
             assert_eq!(tx_fee, 0);
         };
 
         let genesis_info = self.chain_client.genesis_info()?;
         let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
-        let from_address = self.transfer_args.as_ref().unwrap().2.clone();
-        let target_capacity = {
-            let transfer_args = self.transfer_args.as_ref().expect("checked above");
-            transfer_args.4
-        };
+        let from_address = self.transact_args().address.clone();
+        let target_capacity = self.transact_args().capacity;
         let mut take_capacity = 0;
         let mut enough = false;
         let chain_client = &mut self.chain_client;
@@ -213,17 +234,14 @@ impl<'a> DAOSubCommand<'a> {
         debug: bool,
     ) -> Result<String, String> {
         self.output_style = (format, color, debug);
-        self.transfer_args = Some(transfer_args(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m)?);
         self.check_db_ready()?;
 
         let genesis_info = self.chain_client.genesis_info()?;
         let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
-        let from_address = self.transfer_args.as_ref().unwrap().2.clone();
-        let target_capacity = {
-            let transfer_args = self.transfer_args.as_ref().expect("checked above");
-            transfer_args.4 + transfer_args.5
-        };
+        let from_address = self.transact_args().address.clone();
+        let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
         let mut take_capacity = 0;
         let mut enough = false;
         let chain_client = &mut self.chain_client;
@@ -381,15 +399,19 @@ impl<'a> DAOSubCommand<'a> {
     }
 
     fn build(&self, infos: Vec<LiveCellInfo>) -> DAOBuilder {
-        let tx_fee = self.transfer_args.as_ref().unwrap().5;
+        let tx_fee = self.transact_args().tx_fee;
         DAOBuilder::new(tx_fee, infos)
     }
 
     fn sign(&mut self, transaction: TransactionView) -> Result<TransactionView, String> {
-        let (from_key, from_account, from_address, with_password, _capacity, _tx_fee) =
-            self.transfer_args.as_ref().unwrap().clone();
+        let transact_args = &self.transact_args;
         let chain_client = &mut self.chain_client;
         let index_client = &mut self.index_client;
+
+        let from_privkey = &transact_args.as_ref().unwrap().privkey;
+        let from_account = &transact_args.as_ref().unwrap().account;
+        let from_address = &transact_args.as_ref().unwrap().address;
+        let with_password = transact_args.as_ref().unwrap().with_password;
         let secp_cell_dep = chain_client.genesis_info()?.secp_dep();
         let secp_type_hash = chain_client.secp_type_hash()?;
         let interactive = index_client.interactive();
@@ -418,13 +440,13 @@ impl<'a> DAOSubCommand<'a> {
             .into_iter()
             .map(|w| w.unpack())
             .collect::<Vec<_>>();
-        let witnesses = if let Some(privkey) = from_key.as_ref() {
+        let witnesses = if let Some(ref privkey) = from_privkey {
             build_secp_witnesses(tx_hash, witnesses, |digest| {
                 sign_with_privkey(privkey, digest)
             })?
         } else {
             let lock_arg = from_account.as_ref().unwrap();
-            let password = if *with_password {
+            let password = if with_password {
                 Some(read_password(false, None)?)
             } else {
                 None
@@ -452,44 +474,10 @@ impl<'a> DAOSubCommand<'a> {
         self.index_client
             .with_db(network_type, genesis_info, |_| ())
     }
-}
 
-fn transfer_args(
-    m: &ArgMatches,
-) -> Result<
-    (
-        Option<PrivkeyWrapper>,
-        Option<H160>,
-        Address,
-        bool,
-        u64,
-        u64,
-    ),
-    String,
-> {
-    let from_privkey: Option<PrivkeyWrapper> =
-        PrivkeyPathParser.from_matches_opt(m, "privkey-path", false)?;
-    let from_account: Option<H160> =
-        FixedHashParser::<H160>::default().from_matches_opt(m, "from-account", false)?;
-    let from_address = if let Some(from_privkey) = from_privkey.as_ref() {
-        let from_pubkey = secp256k1::PublicKey::from_secret_key(&SECP256K1, from_privkey);
-        let pubkey_hash = blake2b_256(&from_pubkey.serialize()[..]);
-        Address::from_lock_arg(&pubkey_hash[0..20])?
-    } else {
-        Address::from_lock_arg(from_account.as_ref().unwrap().as_bytes())?
-    };
-    let capacity: u64 = CapacityParser.from_matches(m, "capacity")?;
-    let tx_fee: u64 = CapacityParser.from_matches(m, "tx-fee")?;
-    let with_password = m.is_present("with-password");
-
-    Ok((
-        from_privkey,
-        from_account,
-        from_address,
-        with_password,
-        capacity,
-        tx_fee,
-    ))
+    fn transact_args(&self) -> &TransactArgs {
+        self.transact_args.as_ref().expect("exist")
+    }
 }
 
 fn query_args(m: &ArgMatches, chain_client: &mut ChainClient) -> Result<Byte32, String> {
