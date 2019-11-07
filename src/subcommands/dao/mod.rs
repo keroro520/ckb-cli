@@ -1,16 +1,15 @@
 use crate::subcommands::dao::builder::DAOBuilder;
 use crate::subcommands::functional::{
-    build_secp_witnesses, sign_with_keystore, sign_with_privkey, ChainClient, IndexClient,
+    build_secp_witnesses, can_deposit, can_prepare, can_withdraw, sign_with_keystore,
+    sign_with_privkey, ChainClient, IndexClient,
 };
 use crate::utils::arg_parser::{
     ArgParser, CapacityParser, FixedHashParser, PrivkeyPathParser, PrivkeyWrapper,
 };
 use crate::utils::other::{get_address, read_password};
 use crate::utils::printer::{OutputFormat, Printable};
-use byteorder::{ByteOrder, LittleEndian};
 use ckb_hash::blake2b_256;
 use ckb_index::LiveCellInfo;
-use ckb_jsonrpc_types::{CellWithStatus, ScriptHashType};
 use ckb_sdk::{Address, SECP256K1};
 use ckb_types::core::TransactionView;
 use ckb_types::packed::{Byte32, CellOutput};
@@ -80,10 +79,7 @@ impl<'a> DAOSubCommand<'a> {
         let chain_client = &mut self.chain_client;
         let index_client = &mut self.index_client;
         let terminator = |_, info: &LiveCellInfo| {
-            let cell = chain_client
-                .get_live_cell(info.out_point())
-                .expect("get_live_cell failed");
-            if !is_live_secp_cell(&cell, &secp_type_hash) || !is_none_type_cell(&cell) {
+            if Ok(true) != can_deposit(chain_client, info) {
                 return (false, false);
             }
 
@@ -146,7 +142,6 @@ impl<'a> DAOSubCommand<'a> {
 
         let genesis_info = self.chain_client.genesis_info()?;
         let secp_type_hash = self.chain_client.secp_type_hash()?;
-        let dao_type_hash = self.chain_client.dao_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transfer_args.as_ref().unwrap().2.clone();
         let target_capacity = {
@@ -158,16 +153,10 @@ impl<'a> DAOSubCommand<'a> {
         let chain_client = &mut self.chain_client;
         let index_client = &mut self.index_client;
         let terminator = |_, info: &LiveCellInfo| {
-            let cell = chain_client
-                .get_live_cell(info.out_point())
-                .expect("get_live_cell failed; TODO");
-            if !is_live_secp_cell(&cell, &secp_type_hash)
-                || !is_live_deposit_cell(&cell, &dao_type_hash)
-            {
+            if Ok(true) != can_prepare(chain_client, info) {
                 return (false, false);
             }
 
-            // TODO optimize the cell-take strategy
             let (stop, take) = if take_capacity + info.capacity == target_capacity {
                 (true, true)
             } else {
@@ -203,7 +192,6 @@ impl<'a> DAOSubCommand<'a> {
         };
 
         if !enough {
-            // TODO return the actual reason, which may because of our poor cells-take strategy
             let network_type = self.chain_client.network_type()?;
             return Err(format!(
                 "Capacity not enough: {} => {}",
@@ -230,7 +218,6 @@ impl<'a> DAOSubCommand<'a> {
 
         let genesis_info = self.chain_client.genesis_info()?;
         let secp_type_hash = self.chain_client.secp_type_hash()?;
-        let dao_type_hash = self.chain_client.dao_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transfer_args.as_ref().unwrap().2.clone();
         let target_capacity = {
@@ -242,19 +229,13 @@ impl<'a> DAOSubCommand<'a> {
         let chain_client = &mut self.chain_client;
         let index_client = &mut self.index_client;
         let terminator = |_, info: &LiveCellInfo| {
-            let cell = chain_client
-                .get_live_cell(info.out_point())
-                .expect("get_live_cell failed; TODO");
-            if !is_live_secp_cell(&cell, &secp_type_hash)
-                || !is_live_prepare_cell(&cell, &dao_type_hash)
-            {
+            if Ok(true) != can_withdraw(chain_client, info) {
                 return (false, false);
             }
 
             let max_withdrawal: u64 = chain_client
                 .calculate_dao_maximum_withdraw(&info)
                 .expect("RPC calculate_dao_maximum_withdraw for a prepare cell");
-
             let (stop, take) = if take_capacity + max_withdrawal == target_capacity {
                 (true, true)
             } else {
@@ -290,7 +271,6 @@ impl<'a> DAOSubCommand<'a> {
         };
 
         if !enough {
-            // TODO return the actual reason, which may because of our poor cells-take strategy
             return Err(format!(
                 "Capacity not enough: {} => {}",
                 from_address.to_string(network_type),
@@ -315,7 +295,6 @@ impl<'a> DAOSubCommand<'a> {
         let network_type = chain_client.network_type()?;
         let genesis_info = chain_client.genesis_info()?;
         let dao_type_hash = chain_client.dao_type_hash()?;
-        let secp_type_hash = chain_client.secp_type_hash()?;
         let lock_hash = query_args(m, chain_client)?;
         let infos = self
             .index_client
@@ -330,13 +309,7 @@ impl<'a> DAOSubCommand<'a> {
                     .collect::<HashSet<_>>();
                 infos_by_lock
                     .intersection(&infos_by_code)
-                    .filter(|info| {
-                        let cell = chain_client
-                            .get_live_cell(info.out_point())
-                            .expect("get_live_cell failed; TODO");
-                        is_live_secp_cell(&cell, &secp_type_hash)
-                            && is_live_deposit_cell(&cell, &dao_type_hash)
-                    })
+                    .filter(|info| can_prepare(chain_client, info).unwrap_or(false))
                     .sorted_by_key(|live| (live.number, live.tx_index, live.index.output_index))
                     .cloned()
                     .collect::<Vec<_>>()
@@ -363,7 +336,6 @@ impl<'a> DAOSubCommand<'a> {
         let network_type = chain_client.network_type()?;
         let genesis_info = chain_client.genesis_info()?;
         let dao_type_hash = chain_client.dao_type_hash()?;
-        let secp_type_hash = chain_client.secp_type_hash()?;
         let lock_hash = query_args(m, chain_client)?;
         let infos: Vec<LiveCellInfo> =
             self.index_client
@@ -380,13 +352,7 @@ impl<'a> DAOSubCommand<'a> {
                         .collect::<HashSet<_>>();
                     infos_by_lock
                         .intersection(&infos_by_code)
-                        .filter(|info| {
-                            let cell = chain_client
-                                .get_live_cell(info.out_point())
-                                .expect("get_live_cell failed; TODO");
-                            is_live_secp_cell(&cell, &secp_type_hash)
-                                && is_live_prepare_cell(&cell, &dao_type_hash)
-                        })
+                        .filter(|info| can_withdraw(chain_client, info).unwrap_or(false))
                         .sorted_by_key(|live| (live.number, live.tx_index, live.index.output_index))
                         .cloned()
                         .collect::<Vec<_>>()
@@ -538,111 +504,4 @@ fn query_args(m: &ArgMatches, chain_client: &mut ChainClient) -> Result<Byte32, 
     };
 
     Ok(lock_hash)
-}
-
-fn is_live_cell(cell: &CellWithStatus) -> bool {
-    if cell.status != "live" {
-        eprintln!(
-            "[ERROR]: Not live cell({:?}) status: {}",
-            cell.cell.as_ref().map(|info| &info.output),
-            cell.status
-        );
-        return false;
-    }
-
-    if cell.cell.is_none() {
-        eprintln!(
-            "[ERROR]: No output found for cell: {:?}",
-            cell.cell.as_ref().map(|info| &info.output)
-        );
-        return false;
-    }
-
-    true
-}
-
-fn is_none_type_cell(cell: &CellWithStatus) -> bool {
-    cell.cell
-        .as_ref()
-        .map(|cell| cell.output.type_.is_none())
-        .unwrap_or(true)
-}
-
-fn is_live_secp_cell(cell: &CellWithStatus, secp_type_hash: &Byte32) -> bool {
-    if !is_live_cell(cell) {
-        return false;
-    }
-
-    let cell = cell.cell.as_ref().expect("checked above");
-    if &cell.output.lock.code_hash.pack() != secp_type_hash {
-        eprintln!("[ERROR]: No locked by SECP lock script: {:?}", cell,);
-        return false;
-    }
-
-    if cell.output.lock.hash_type != ScriptHashType::Type {
-        eprintln!(
-            "[ERROR]: Locked by SECP lock script but not ScriptHashType::Type: {:?}",
-            cell,
-        );
-        return false;
-    }
-
-    true
-}
-
-fn is_live_deposit_cell(cell: &CellWithStatus, dao_type_hash: &Byte32) -> bool {
-    if !is_live_cell(cell) {
-        return false;
-    }
-
-    let cell = cell.cell.as_ref().expect("checked above");
-    let content = cell
-        .data
-        .as_ref()
-        .map(|cell_data| cell_data.content.clone().into_bytes().pack())
-        .unwrap();
-    if content.len() != 8 {
-        return false;
-    }
-
-    if LittleEndian::read_u64(&content.raw_data()[0..8]) != 0 {
-        return false;
-    }
-
-    cell.output
-        .type_
-        .as_ref()
-        .map(|script| {
-            script.hash_type == ScriptHashType::Type && &script.code_hash.pack() == dao_type_hash
-        })
-        .unwrap_or(false)
-}
-
-fn is_live_prepare_cell(cell: &CellWithStatus, dao_type_hash: &Byte32) -> bool {
-    if !is_live_cell(cell) {
-        return false;
-    }
-
-    let cell = cell.cell.as_ref().expect("checked above");
-    let content = cell
-        .data
-        .as_ref()
-        .map(|cell_data| cell_data.content.clone().into_bytes().pack())
-        .unwrap();
-    if content.len() != 8 {
-        return false;
-    }
-
-    let deposited_number = LittleEndian::read_u64(&content.raw_data()[0..8]);
-    if deposited_number == 0 {
-        return false;
-    }
-
-    cell.output
-        .type_
-        .as_ref()
-        .map(|script| {
-            script.hash_type == ScriptHashType::Type && &script.code_hash.pack() == dao_type_hash
-        })
-        .unwrap_or(false)
 }
