@@ -56,7 +56,7 @@ impl<'a> ChainClient<'a> {
             .call()
             .map_err(|err| format!("RPC get_transaction error: {}", err))?
             .0
-            .ok_or("RPC get_transaction returns none".to_owned())
+            .ok_or_else(|| "RPC get_transaction returns none".to_owned())
     }
 
     pub fn get_header(&mut self, block_hash: Byte32) -> Result<Option<HeaderView>, String> {

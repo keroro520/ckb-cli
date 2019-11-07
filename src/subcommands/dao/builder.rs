@@ -10,7 +10,6 @@ use ckb_types::{
 };
 use std::collections::HashSet;
 
-// TODO Allow tx_fee != 0
 // NOTE: We assume all inputs from same account
 #[derive(Debug)]
 pub(crate) struct DAOBuilder {

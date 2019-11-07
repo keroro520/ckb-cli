@@ -25,6 +25,7 @@ mod command;
 // TODO optimize the cell-take strategy
 // TODO check whether output data is empty before spending
 // TODO Allow transaction change
+// TODO Allow transaction fee
 
 pub(crate) struct TransactArgs {
     pub(crate) privkey: Option<PrivkeyWrapper>,
@@ -65,7 +66,6 @@ impl TransactArgs {
 pub struct DAOSubCommand<'a> {
     chain_client: &'a mut ChainClient<'a>,
     index_client: &'a mut IndexClient<'a>,
-    // output_format, color, debug
     output_style: (OutputFormat, bool, bool),
     transact_args: Option<TransactArgs>,
 }
@@ -242,10 +242,11 @@ impl<'a> DAOSubCommand<'a> {
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
-        let mut take_capacity = 0;
-        let mut enough = false;
         let chain_client = &mut self.chain_client;
         let index_client = &mut self.index_client;
+
+        let mut take_capacity = 0;
+        let mut enough = false;
         let terminator = |_, info: &LiveCellInfo| {
             if Ok(true) != can_withdraw(chain_client, info) {
                 return (false, false);
@@ -309,29 +310,12 @@ impl<'a> DAOSubCommand<'a> {
         debug: bool,
     ) -> Result<String, String> {
         self.output_style = (format, color, debug);
-        let chain_client = &mut self.chain_client;
-        let network_type = chain_client.network_type()?;
-        let genesis_info = chain_client.genesis_info()?;
-        let dao_type_hash = chain_client.dao_type_hash()?;
-        let lock_hash = query_args(m, chain_client)?;
-        let infos = self
-            .index_client
-            .with_db(network_type, genesis_info, |db| {
-                let infos_by_lock = db
-                    .get_live_cells_by_lock(lock_hash, Some(0), |_, _| (false, true))
-                    .into_iter()
-                    .collect::<HashSet<_>>();
-                let infos_by_code = db
-                    .get_live_cells_by_code(dao_type_hash.clone(), Some(0), |_, _| (false, true))
-                    .into_iter()
-                    .collect::<HashSet<_>>();
-                infos_by_lock
-                    .intersection(&infos_by_code)
-                    .filter(|info| can_prepare(chain_client, info).unwrap_or(false))
-                    .sorted_by_key(|live| (live.number, live.tx_index, live.index.output_index))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })?;
+        let lock_hash = query_args(m, self.chain_client)?;
+        let infos = self.query_cells(lock_hash)?;
+        let infos = infos
+            .into_iter()
+            .filter(|info| can_prepare(self.chain_client, info).unwrap_or(false))
+            .collect::<Vec<_>>();
         let total_capacity = infos.iter().map(|live| live.capacity).sum::<u64>();
         let resp = serde_json::json!({
             "live_cells": infos.into_iter().map(|info| {
@@ -350,35 +334,21 @@ impl<'a> DAOSubCommand<'a> {
         debug: bool,
     ) -> Result<String, String> {
         self.output_style = (format, color, debug);
-        let chain_client = &mut self.chain_client;
-        let network_type = chain_client.network_type()?;
-        let genesis_info = chain_client.genesis_info()?;
-        let dao_type_hash = chain_client.dao_type_hash()?;
-        let lock_hash = query_args(m, chain_client)?;
-        let infos: Vec<LiveCellInfo> =
-            self.index_client
-                .with_db(network_type, genesis_info, |db| {
-                    let infos_by_lock = db
-                        .get_live_cells_by_lock(lock_hash, Some(0), |_, _| (false, true))
-                        .into_iter()
-                        .collect::<HashSet<_>>();
-                    let infos_by_code = db
-                        .get_live_cells_by_code(dao_type_hash.clone(), Some(0), |_, _| {
-                            (false, true)
-                        })
-                        .into_iter()
-                        .collect::<HashSet<_>>();
-                    infos_by_lock
-                        .intersection(&infos_by_code)
-                        .filter(|info| can_withdraw(chain_client, info).unwrap_or(false))
-                        .sorted_by_key(|live| (live.number, live.tx_index, live.index.output_index))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })?;
+
+        let infos: Vec<LiveCellInfo> = {
+            let lock_hash = query_args(m, self.chain_client)?;
+            let infos = self.query_cells(lock_hash)?;
+            infos
+                .into_iter()
+                .filter(|info| can_withdraw(self.chain_client, info).unwrap_or(false))
+                .collect()
+        };
         let total_capacity = infos.iter().map(|live| live.capacity).sum::<u64>();
+
         let mut total_maximum_withdraw = 0;
         let infos_with_interest = infos.into_iter().map(|info| {
-            let maximum_withdraw = chain_client
+            let maximum_withdraw = self
+                .chain_client
                 .calculate_dao_maximum_withdraw(&info)
                 .expect("calculate_dao_maximum_withdraw failed; TODO");
             total_maximum_withdraw += maximum_withdraw;
@@ -386,7 +356,7 @@ impl<'a> DAOSubCommand<'a> {
         });
 
         let resp = serde_json::json!({
-            "live_cells": infos_with_interest.into_iter().map(|(info, maximum_withdraw)| {
+            "live_cells": infos_with_interest.map(|(info, maximum_withdraw)| {
                 let mut value = serde_json::to_value(&info).unwrap();
                 let obj = value.as_object_mut().unwrap();
                 obj.insert("maximum_withdraw".to_owned(), serde_json::json!(maximum_withdraw));
@@ -396,6 +366,27 @@ impl<'a> DAOSubCommand<'a> {
             "total_maximum_withdraw": total_maximum_withdraw,
         });
         Ok(resp.render(format, color))
+    }
+
+    fn query_cells(&mut self, lock_hash: Byte32) -> Result<Vec<LiveCellInfo>, String> {
+        let genesis_info = self.chain_client.genesis_info()?;
+        let network_type = self.chain_client.network_type()?;
+        let dao_type_hash = self.chain_client.dao_type_hash()?;
+        self.index_client.with_db(network_type, genesis_info, |db| {
+            let infos_by_lock = db
+                .get_live_cells_by_lock(lock_hash, Some(0), |_, _| (false, true))
+                .into_iter()
+                .collect::<HashSet<_>>();
+            let infos_by_code = db
+                .get_live_cells_by_code(dao_type_hash, Some(0), |_, _| (false, true))
+                .into_iter()
+                .collect::<HashSet<_>>();
+            infos_by_lock
+                .intersection(&infos_by_code)
+                .sorted_by_key(|live| (live.number, live.tx_index, live.index.output_index))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
     }
 
     fn build(&self, infos: Vec<LiveCellInfo>) -> DAOBuilder {
