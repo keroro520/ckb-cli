@@ -8,11 +8,10 @@ use crate::utils::arg_parser::{
 };
 use crate::utils::other::{get_address, read_password};
 use crate::utils::printer::{OutputFormat, Printable};
-use ckb_hash::blake2b_256;
 use ckb_index::LiveCellInfo;
-use ckb_sdk::{Address, SECP256K1};
+use ckb_sdk::{Address, AddressPayload, NetworkType, SECP256K1};
 use ckb_types::core::TransactionView;
-use ckb_types::packed::{Byte32, CellOutput};
+use ckb_types::packed::{Byte32, CellOutput, Script};
 use ckb_types::prelude::*;
 use ckb_types::{H160, H256};
 use clap::ArgMatches;
@@ -37,17 +36,18 @@ pub(crate) struct TransactArgs {
 }
 
 impl TransactArgs {
-    pub(crate) fn from_matches(m: &ArgMatches) -> Result<Self, String> {
+    pub(crate) fn from_matches(m: &ArgMatches, network_type: NetworkType) -> Result<Self, String> {
         let privkey: Option<PrivkeyWrapper> =
             PrivkeyPathParser.from_matches_opt(m, "privkey-path", false)?;
         let account: Option<H160> =
             FixedHashParser::<H160>::default().from_matches_opt(m, "from-account", false)?;
         let address = if let Some(privkey) = privkey.as_ref() {
             let pubkey = secp256k1::PublicKey::from_secret_key(&SECP256K1, privkey);
-            let pubkey_hash = blake2b_256(&pubkey.serialize()[..]);
-            Address::from_lock_arg(&pubkey_hash[0..20])?
+            let payload = AddressPayload::from_pubkey(&pubkey);
+            Address::new(network_type, payload)
         } else {
-            Address::from_lock_arg(account.as_ref().unwrap().as_bytes())?
+            let payload = AddressPayload::from_pubkey_hash(account.clone().unwrap());
+            Address::new(network_type, payload)
         };
         let capacity: u64 = CapacityParser.from_matches(m, "capacity")?;
         let tx_fee: u64 = CapacityParser.from_matches(m, "tx-fee")?;
@@ -90,12 +90,12 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
+        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
         self.check_db_ready()?;
 
         let genesis_info = self.chain_client.genesis_info()?;
-        let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
@@ -126,9 +126,7 @@ impl<'a> DAOSubCommand<'a> {
         let infos: Vec<LiveCellInfo> = {
             index_client.with_db(network_type, genesis_info, |db| {
                 db.get_live_cells_by_lock(
-                    from_address
-                        .lock_script(secp_type_hash.clone())
-                        .calc_script_hash(),
+                    Script::from(from_address.payload()).calc_script_hash(),
                     None,
                     terminator,
                 )
@@ -138,8 +136,7 @@ impl<'a> DAOSubCommand<'a> {
         if !enough {
             return Err(format!(
                 "Capacity not enough: {} => {}",
-                from_address.to_string(network_type),
-                take_capacity,
+                from_address, take_capacity,
             ));
         }
 
@@ -155,8 +152,9 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
+        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
         self.check_db_ready()?;
 
         {
@@ -165,7 +163,6 @@ impl<'a> DAOSubCommand<'a> {
         };
 
         let genesis_info = self.chain_client.genesis_info()?;
-        let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity;
@@ -197,9 +194,7 @@ impl<'a> DAOSubCommand<'a> {
             index_client
                 .with_db(network_type, genesis_info, |db| {
                     db.get_live_cells_by_lock(
-                        from_address
-                            .lock_script(secp_type_hash.clone())
-                            .calc_script_hash(),
+                        Script::from(from_address.payload()).calc_script_hash(),
                         None,
                         terminator,
                     )
@@ -213,11 +208,9 @@ impl<'a> DAOSubCommand<'a> {
         };
 
         if !enough {
-            let network_type = self.chain_client.network_type()?;
             return Err(format!(
                 "Capacity not enough: {} => {}",
-                from_address.to_string(network_type),
-                take_capacity,
+                from_address, take_capacity,
             ));
         }
 
@@ -233,12 +226,12 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
+        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
         self.check_db_ready()?;
 
         let genesis_info = self.chain_client.genesis_info()?;
-        let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
@@ -274,9 +267,7 @@ impl<'a> DAOSubCommand<'a> {
             index_client
                 .with_db(network_type, genesis_info, |db| {
                     db.get_live_cells_by_lock(
-                        from_address
-                            .lock_script(secp_type_hash.clone())
-                            .calc_script_hash(),
+                        Script::from(from_address.payload()).calc_script_hash(),
                         None,
                         terminator,
                     )
@@ -292,8 +283,7 @@ impl<'a> DAOSubCommand<'a> {
         if !enough {
             return Err(format!(
                 "Capacity not enough: {} => {}",
-                from_address.to_string(network_type),
-                take_capacity,
+                from_address, take_capacity,
             ));
         }
 
@@ -403,8 +393,7 @@ impl<'a> DAOSubCommand<'a> {
         let from_account = &transact_args.as_ref().unwrap().account;
         let from_address = &transact_args.as_ref().unwrap().address;
         let with_password = transact_args.as_ref().unwrap().with_password;
-        let secp_cell_dep = chain_client.genesis_info()?.secp_dep();
-        let secp_type_hash = chain_client.secp_type_hash()?;
+        let secp_cell_dep = chain_client.genesis_info()?.sighash_dep();
         let interactive = index_client.interactive();
 
         // Build outputs' SECP locks, and remember putting SECP cell into cell_deps
@@ -414,7 +403,7 @@ impl<'a> DAOSubCommand<'a> {
             .map(|output: CellOutput| {
                 output
                     .as_builder()
-                    .lock(from_address.lock_script(secp_type_hash.clone()))
+                    .lock(from_address.payload().into())
                     .build()
             })
             .collect::<Vec<_>>();
@@ -477,9 +466,9 @@ fn query_args(m: &ArgMatches, chain_client: &mut ChainClient) -> Result<Byte32, 
     let lock_hash = if let Some(lock_hash) = lock_hash_opt {
         lock_hash.pack()
     } else {
-        let secp_type_hash = chain_client.secp_type_hash()?;
-        let address = get_address(m)?;
-        address.lock_script(secp_type_hash).calc_script_hash()
+        let network_type = chain_client.network_type()?;
+        let address = get_address(Some(network_type), m)?;
+        Script::from(&address).calc_script_hash()
     };
 
     Ok(lock_hash)

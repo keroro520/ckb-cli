@@ -31,7 +31,12 @@ impl<'a> ChainClient<'a> {
 
     pub fn secp_type_hash(&mut self) -> Result<Byte32, String> {
         self.ensure_genesis()?;
-        Ok(self.genesis_info.as_ref().unwrap().secp_type_hash().clone())
+        Ok(self
+            .genesis_info
+            .as_ref()
+            .unwrap()
+            .sighash_type_hash()
+            .clone())
     }
 
     pub fn dao_type_hash(&mut self) -> Result<Byte32, String> {

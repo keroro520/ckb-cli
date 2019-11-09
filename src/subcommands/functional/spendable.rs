@@ -8,7 +8,9 @@ use ckb_types::prelude::*;
 pub fn can_spend(chain_client: &mut ChainClient, info: &LiveCellInfo) -> Result<bool, String> {
     let secp_type_hash = chain_client.secp_type_hash()?;
     let cell = chain_client.get_live_cell(info.out_point())?;
-    Ok(is_live_secp_cell(&cell, &secp_type_hash) && is_none_type_cell(&cell))
+    Ok(is_live_secp_cell(&cell, &secp_type_hash)
+        && is_none_type_cell(&cell)
+        && is_empty_data(&cell))
 }
 
 pub fn can_deposit(chain_client: &mut ChainClient, info: &LiveCellInfo) -> Result<bool, String> {
@@ -55,6 +57,13 @@ pub fn is_none_type_cell(cell: &CellWithStatus) -> bool {
         .as_ref()
         .map(|cell| cell.output.type_.is_none())
         .unwrap_or(true)
+}
+
+pub fn is_empty_data(cell: &CellWithStatus) -> bool {
+    cell.cell
+        .as_ref()
+        .map(|cell| cell.data.as_ref().unwrap().content.is_empty())
+        .unwrap_or(false)
 }
 
 pub fn is_live_secp_cell(cell: &CellWithStatus, secp_type_hash: &Byte32) -> bool {

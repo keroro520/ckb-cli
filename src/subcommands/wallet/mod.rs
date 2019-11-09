@@ -15,6 +15,7 @@ use ckb_types::{
 use clap::{App, ArgMatches, SubCommand};
 
 use super::CliSubCommand;
+use crate::subcommands::functional::{is_empty_data, is_live_secp_cell, is_none_type_cell};
 use crate::utils::{
     arg,
     arg_parser::{
@@ -177,6 +178,7 @@ impl<'a> WalletSubCommand<'a> {
         self.with_db(|_| ())?;
         let index_dir = self.index_dir.clone();
         let genesis_hash = genesis_info.header().hash();
+        let secp_type_hash = genesis_info.sighash_type_hash();
         let genesis_info_clone = genesis_info.clone();
         let max_mature_number = get_max_mature_number(self.rpc_client)?;
         let mut total_capacity = 0;
@@ -187,7 +189,11 @@ impl<'a> WalletSubCommand<'a> {
                 .get_live_cell(out_point.into(), true)
                 .call()
                 .expect("get_live_cell by RPC call failed");
-            if is_live_cell(&resp) && is_secp_cell(&resp) && is_mature(info, max_mature_number) {
+            if is_live_secp_cell(&resp, secp_type_hash)
+                && is_none_type_cell(&resp)
+                && is_empty_data(&resp)
+                && is_mature(info, max_mature_number)
+            {
                 total_capacity += info.capacity;
                 (total_capacity >= capacity + tx_fee, true)
             } else {
@@ -506,43 +512,6 @@ fn is_mature(info: &LiveCellInfo, max_mature_number: u64) -> bool {
         // Live cells in genesis are all mature
         || info.number == 0
         || info.number <= max_mature_number
-}
-
-fn is_live_cell(cell: &CellWithStatus) -> bool {
-    if cell.status != "live" {
-        eprintln!(
-            "[ERROR]: Not live cell({:?}) status: {}",
-            cell.cell.as_ref().map(|info| &info.output),
-            cell.status
-        );
-        return false;
-    }
-
-    if cell.cell.is_none() {
-        eprintln!(
-            "[ERROR]: No output found for cell: {:?}",
-            cell.cell.as_ref().map(|info| &info.output)
-        );
-        return false;
-    }
-
-    true
-}
-
-fn is_secp_cell(cell: &CellWithStatus) -> bool {
-    if let Some(ref info) = cell.cell {
-        // FIXME Check if output.data.is_empty()
-        if info.output.type_.is_none() {
-            return true;
-        } else {
-            log::info!(
-                "Ignore live cell({:?}) which data is not empty or type is not empty.",
-                info.output
-            );
-        }
-    }
-
-    false
 }
 
 fn to_data(m: &ArgMatches) -> Result<Bytes, String> {
