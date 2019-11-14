@@ -1,4 +1,4 @@
-use crate::subcommands::functional::ChainClient;
+use crate::subcommands::functional::{can_prepare, ChainClient};
 use ckb_index::LiveCellInfo;
 use ckb_types::core::{EpochNumber, EpochNumberWithFraction};
 use ckb_types::prelude::Builder;
@@ -13,14 +13,18 @@ use std::collections::HashSet;
 // NOTE: We assume all inputs from same account
 #[derive(Debug)]
 pub(crate) struct DAOBuilder {
+    capacity: u64,
     tx_fee: u64,
     live_cells: Vec<LiveCellInfo>,
 }
 
 impl DAOBuilder {
-    pub(crate) fn new(tx_fee: u64, live_cells: Vec<LiveCellInfo>) -> Self {
-        assert_eq!(0, tx_fee);
-        Self { tx_fee, live_cells }
+    pub(crate) fn new(capacity: u64, tx_fee: u64, live_cells: Vec<LiveCellInfo>) -> Self {
+        Self {
+            capacity,
+            tx_fee,
+            live_cells,
+        }
     }
 
     pub(crate) fn deposit(
@@ -28,7 +32,8 @@ impl DAOBuilder {
         chain_client: &mut ChainClient,
     ) -> Result<TransactionView, String> {
         let genesis_info = chain_client.genesis_info()?;
-        let input_capacity = self.live_cells.iter().map(|txo| txo.capacity).sum::<u64>();
+        let deposit_capacity = self.capacity;
+
         let inputs = self
             .live_cells
             .iter()
@@ -38,23 +43,33 @@ impl DAOBuilder {
             .iter()
             .map(|_| Default::default())
             .collect::<Vec<_>>();
-        let output = {
+        let (output, output_data) = {
             // NOTE: Here give null lock script to the output. It's caller's duty to fill the lock
-            CellOutput::new_builder()
-                .capacity(input_capacity.pack())
+            let output = CellOutput::new_builder()
+                .capacity(deposit_capacity.pack())
                 .type_(Some(dao_type_script(chain_client)?).pack())
-                .build()
+                .build();
+            let output_data = Bytes::from(&[0u8; 8][..]).pack();
+            (output, output_data)
         };
-        let output_data = Bytes::from(&[0u8; 8][..]).pack();
         let cell_deps = vec![genesis_info.dao_dep()];
         let tx = TransactionBuilder::default()
             .inputs(inputs)
             .output(output)
             .output_data(output_data)
             .cell_deps(cell_deps)
-            .witnesses(witnesses)
-            .build();
-        Ok(tx)
+            .witnesses(witnesses);
+
+        let input_capacity = self.live_cells.iter().map(|txo| txo.capacity).sum::<u64>();
+        let change_capacity = input_capacity - self.capacity - self.tx_fee;
+        if change_capacity > 0 {
+            let change = CellOutput::new_builder()
+                .capacity(change_capacity.pack())
+                .build();
+            Ok(tx.output(change).output_data(Default::default()).build())
+        } else {
+            Ok(tx.build())
+        }
     }
 
     pub(crate) fn prepare(
@@ -62,18 +77,27 @@ impl DAOBuilder {
         chain_client: &mut ChainClient,
     ) -> Result<TransactionView, String> {
         let genesis_info = chain_client.genesis_info()?;
+        let mut deposit_cells: Vec<LiveCellInfo> = Vec::new();
+        let mut change_cells: Vec<LiveCellInfo> = Vec::new();
+        for info in self.live_cells.iter() {
+            if can_prepare(chain_client, info)? {
+                deposit_cells.push(info.clone());
+            } else {
+                change_cells.push(info.clone());
+            }
+        }
         let deposit_txo_headers = {
-            let deposit_out_points = self
-                .live_cells
+            let deposit_out_points = deposit_cells
                 .iter()
                 .map(|txo| txo.out_point())
                 .collect::<Vec<_>>();
             self.txo_headers(chain_client, deposit_out_points)?
         };
 
-        let inputs = deposit_txo_headers
+        let inputs = self
+            .live_cells
             .iter()
-            .map(|(out_point, _, _)| CellInput::new(out_point.clone(), 0))
+            .map(|txo| CellInput::new(txo.out_point(), 0))
             .collect::<Vec<_>>();
         // NOTE: Prepare output has the same capacity, type script, lock script as the input
         let outputs = deposit_txo_headers
@@ -100,9 +124,14 @@ impl DAOBuilder {
             .cell_deps(cell_deps)
             .header_deps(header_deps)
             .witnesses(witnesses)
-            .outputs_data(outputs_data)
+            .outputs_data(outputs_data);
+
+        let change_capacity =
+            change_cells.iter().map(|txo| txo.capacity).sum::<u64>() - self.tx_fee;
+        let change = CellOutput::new_builder()
+            .capacity(change_capacity.pack())
             .build();
-        Ok(tx)
+        Ok(tx.output(change).output_data(Default::default()).build())
     }
 
     pub(crate) fn withdraw(
@@ -144,7 +173,7 @@ impl DAOBuilder {
             let since = since_from_absolute_epoch_number(minimal_unlock_point.full_value());
             CellInput::new(out_point.clone(), since)
         });
-        let output_capacity = deposit_txo_headers
+        let total_capacity = deposit_txo_headers
             .iter()
             .zip(prepare_txo_headers.iter())
             .map(|((deposit_txo, _, _), (_, _, prepare_header))| {
@@ -159,6 +188,7 @@ impl DAOBuilder {
                     .value()
             })
             .sum::<u64>();
+        let output_capacity = total_capacity - self.tx_fee;
         let output = CellOutput::new_builder()
             .capacity(output_capacity.pack())
             .build();
