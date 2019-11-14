@@ -9,8 +9,8 @@ use crate::utils::arg_parser::{
 use crate::utils::other::{get_address, read_password};
 use crate::utils::printer::{OutputFormat, Printable};
 use ckb_index::LiveCellInfo;
-use ckb_sdk::{MIN_SECP_CELL_CAPACITY, Address, AddressPayload, NetworkType, SECP256K1};
-use ckb_types::core::TransactionView;
+use ckb_sdk::{Address, MIN_SECP_CELL_CAPACITY, Address, AddressPayload, NetworkType, SECP256K1};
+use ckb_types::core::{Capacity, TransactionView};
 use ckb_types::packed::{Byte32, CellOutput, Script};
 use ckb_types::prelude::*;
 use ckb_types::{H160, H256};
@@ -425,6 +425,8 @@ impl<'a> DAOSubCommand<'a> {
     }
 
     fn send_transaction(&mut self, transaction: TransactionView) -> Result<String, String> {
+        check_lack_of_capacity(&transaction)?;
+
         let (format, color, debug) = &self.output_style;
         self.chain_client
             .send_transaction(transaction, *format, *debug, *color)
@@ -454,4 +456,26 @@ fn query_args(m: &ArgMatches, chain_client: &mut ChainClient) -> Result<Byte32, 
     };
 
     Ok(lock_hash)
+}
+
+fn check_lack_of_capacity(transaction: &TransactionView) -> Result<(), String> {
+    for (output, output_data) in transaction.outputs_with_data_iter() {
+        let exact = output
+            .clone()
+            .as_builder()
+            .build_exact_capacity(Capacity::bytes(output_data.len()).unwrap())
+            .unwrap();
+        let output_capacity: u64 = output.capacity().unpack();
+        let exact_capacity: u64 = exact.capacity().unpack();
+        if output_capacity < exact_capacity {
+            return Err(format!(
+                "Insufficient Cell Capacity, output_capacity({}) < exact_capacity({}), output: {}, output_data_size: {}",
+                output_capacity,
+                exact_capacity,
+                output,
+                output_data.len(),
+            ));
+        }
+    }
+    Ok(())
 }
