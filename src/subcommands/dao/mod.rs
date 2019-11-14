@@ -9,7 +9,7 @@ use crate::utils::arg_parser::{
 use crate::utils::other::{get_address, read_password};
 use crate::utils::printer::{OutputFormat, Printable};
 use ckb_index::LiveCellInfo;
-use ckb_sdk::{Address, AddressPayload, NetworkType, SECP256K1};
+use ckb_sdk::{MIN_SECP_CELL_CAPACITY, Address, AddressPayload, NetworkType, SECP256K1};
 use ckb_types::core::TransactionView;
 use ckb_types::packed::{Byte32, CellOutput, Script};
 use ckb_types::prelude::*;
@@ -20,11 +20,6 @@ use std::collections::HashSet;
 
 mod builder;
 mod command;
-
-// TODO optimize the cell-take strategy
-// TODO check whether output data is empty before spending
-// TODO Allow transaction change
-// TODO Allow transaction fee
 
 pub(crate) struct TransactArgs {
     pub(crate) privkey: Option<PrivkeyWrapper>,
@@ -95,51 +90,8 @@ impl<'a> DAOSubCommand<'a> {
         self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
         self.check_db_ready()?;
 
-        let genesis_info = self.chain_client.genesis_info()?;
-        let network_type = self.chain_client.network_type()?;
-        let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
-        let mut take_capacity = 0;
-        let mut enough = false;
-        let chain_client = &mut self.chain_client;
-        let index_client = &mut self.index_client;
-        let terminator = |_, info: &LiveCellInfo| {
-            if Ok(true) != can_deposit(chain_client, info) {
-                return (false, false);
-            }
-
-            let (stop, take) = if take_capacity + info.capacity == target_capacity {
-                (true, true)
-            } else {
-                (false, false)
-            };
-            if take {
-                take_capacity += info.capacity;
-            }
-            if stop {
-                enough = true;
-            }
-
-            (stop, take)
-        };
-
-        let infos: Vec<LiveCellInfo> = {
-            index_client.with_db(network_type, genesis_info, |db| {
-                db.get_live_cells_by_lock(
-                    Script::from(from_address.payload()).calc_script_hash(),
-                    None,
-                    terminator,
-                )
-            })?
-        };
-
-        if !enough {
-            return Err(format!(
-                "Capacity not enough: {} => {}",
-                from_address, take_capacity,
-            ));
-        }
-
+        let infos = self.collect_secp_cells(target_capacity)?;
         let tx = self.build(infos).deposit(self.chain_client)?;
         let tx = self.sign(tx)?;
         self.send_transaction(tx)
@@ -152,67 +104,13 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
-        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
+        self.transact_args = Some(TransactArgs::from_matches(m)?);
         self.check_db_ready()?;
-
-        {
-            let tx_fee = self.transact_args().tx_fee;
-            assert_eq!(tx_fee, 0);
-        };
-
-        let genesis_info = self.chain_client.genesis_info()?;
-        let network_type = self.chain_client.network_type()?;
-        let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity;
-        let mut take_capacity = 0;
-        let mut enough = false;
-        let chain_client = &mut self.chain_client;
-        let index_client = &mut self.index_client;
-        let terminator = |_, info: &LiveCellInfo| {
-            if Ok(true) != can_prepare(chain_client, info) {
-                return (false, false);
-            }
-
-            let (stop, take) = if take_capacity + info.capacity == target_capacity {
-                (true, true)
-            } else {
-                (false, false)
-            };
-            if take {
-                take_capacity += info.capacity;
-            }
-            if stop {
-                enough = true;
-            }
-
-            (stop, take)
-        };
-
-        let infos: Vec<LiveCellInfo> = {
-            index_client
-                .with_db(network_type, genesis_info, |db| {
-                    db.get_live_cells_by_lock(
-                        Script::from(from_address.payload()).calc_script_hash(),
-                        None,
-                        terminator,
-                    )
-                })
-                .map_err(|_err| {
-                    format!(
-                        "index database may not ready, sync process: {}",
-                        self.index_client.state()
-                    )
-                })?
-        };
-
-        if !enough {
-            return Err(format!(
-                "Capacity not enough: {} => {}",
-                from_address, take_capacity,
-            ));
-        }
+        let tx_fee = self.transact_args().tx_fee;
+        let mut infos = self.collect_deposit_cells(target_capacity)?;
+        infos.extend(self.collect_secp_cells(tx_fee)?.into_iter());
 
         let tx = self.build(infos).prepare(self.chain_client)?;
         let tx = self.sign(tx)?;
@@ -226,67 +124,12 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
-        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
+        self.transact_args = Some(TransactArgs::from_matches(m)?);
         self.check_db_ready()?;
 
-        let genesis_info = self.chain_client.genesis_info()?;
-        let network_type = self.chain_client.network_type()?;
-        let from_address = self.transact_args().address.clone();
         let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
-        let chain_client = &mut self.chain_client;
-        let index_client = &mut self.index_client;
-
-        let mut take_capacity = 0;
-        let mut enough = false;
-        let terminator = |_, info: &LiveCellInfo| {
-            if Ok(true) != can_withdraw(chain_client, info) {
-                return (false, false);
-            }
-
-            let max_withdrawal: u64 = chain_client
-                .calculate_dao_maximum_withdraw(&info)
-                .expect("RPC calculate_dao_maximum_withdraw for a prepare cell");
-            let (stop, take) = if take_capacity + max_withdrawal == target_capacity {
-                (true, true)
-            } else {
-                (false, false)
-            };
-            if take {
-                take_capacity += max_withdrawal
-            }
-            if stop {
-                enough = true;
-            }
-
-            (stop, take)
-        };
-
-        let infos: Vec<LiveCellInfo> = {
-            index_client
-                .with_db(network_type, genesis_info, |db| {
-                    db.get_live_cells_by_lock(
-                        Script::from(from_address.payload()).calc_script_hash(),
-                        None,
-                        terminator,
-                    )
-                })
-                .map_err(|_err| {
-                    format!(
-                        "index database may not ready, sync process: {}",
-                        self.index_client.state(),
-                    )
-                })?
-        };
-
-        if !enough {
-            return Err(format!(
-                "Capacity not enough: {} => {}",
-                from_address, take_capacity,
-            ));
-        }
-
+        let infos = self.collect_prepare_cells(target_capacity)?;
         let tx = self.build(infos).withdraw(self.chain_client)?;
         let tx = self.sign(tx)?;
         self.send_transaction(tx)
@@ -380,8 +223,9 @@ impl<'a> DAOSubCommand<'a> {
     }
 
     fn build(&self, infos: Vec<LiveCellInfo>) -> DAOBuilder {
+        let capacity = self.transact_args().capacity;
         let tx_fee = self.transact_args().tx_fee;
-        DAOBuilder::new(tx_fee, infos)
+        DAOBuilder::new(capacity, tx_fee, infos)
     }
 
     fn sign(&mut self, transaction: TransactionView) -> Result<TransactionView, String> {
@@ -440,6 +284,144 @@ impl<'a> DAOSubCommand<'a> {
             .as_advanced_builder()
             .set_witnesses(witnesses.iter().map(Pack::pack).collect())
             .build())
+    }
+
+    fn collect_secp_cells(&mut self, target_capacity: u64) -> Result<Vec<LiveCellInfo>, String> {
+        let genesis_info = self.chain_client.genesis_info()?;
+        let secp_type_hash = self.chain_client.secp_type_hash()?;
+        let network_type = self.chain_client.network_type()?;
+        let from_address = self.transact_args().address.clone();
+        let chain_client = &mut self.chain_client;
+        let index_client = &mut self.index_client;
+        let mut enough = false;
+        let mut take_capacity = 0;
+        let terminator = |_, info: &LiveCellInfo| {
+            if Ok(true) != can_deposit(chain_client, info) {
+                return (false, false);
+            }
+
+            take_capacity += info.capacity;
+            if take_capacity == target_capacity
+                || take_capacity >= target_capacity + *MIN_SECP_CELL_CAPACITY
+            {
+                enough = true;
+            }
+            (enough, true)
+        };
+
+        let infos: Vec<LiveCellInfo> = {
+            index_client.with_db(network_type, genesis_info, |db| {
+                db.get_live_cells_by_lock(
+                    from_address
+                        .lock_script(secp_type_hash.clone())
+                        .calc_script_hash(),
+                    None,
+                    terminator,
+                )
+            })?
+        };
+
+        if !enough {
+            return Err(format!(
+                "Capacity not enough: {} => {}",
+                from_address.display_with_prefix(network_type),
+                take_capacity,
+            ));
+        }
+        Ok(infos)
+    }
+
+    fn collect_deposit_cells(&mut self, target_capacity: u64) -> Result<Vec<LiveCellInfo>, String> {
+        let genesis_info = self.chain_client.genesis_info()?;
+        let secp_type_hash = self.chain_client.secp_type_hash()?;
+        let network_type = self.chain_client.network_type()?;
+        let from_address = self.transact_args().address.clone();
+        let chain_client = &mut self.chain_client;
+        let index_client = &mut self.index_client;
+        let mut enough = false;
+        let mut take_capacity = 0;
+        let terminator = |_, info: &LiveCellInfo| {
+            if Ok(true) != can_prepare(chain_client, info) {
+                return (false, false);
+            }
+
+            if info.capacity == target_capacity {
+                take_capacity = info.capacity;
+                enough = true;
+                (true, true)
+            } else {
+                (false, false)
+            }
+        };
+
+        let infos: Vec<LiveCellInfo> = {
+            index_client.with_db(network_type, genesis_info, |db| {
+                db.get_live_cells_by_lock(
+                    from_address
+                        .lock_script(secp_type_hash.clone())
+                        .calc_script_hash(),
+                    None,
+                    terminator,
+                )
+            })?
+        };
+
+        if !enough {
+            return Err(format!(
+                "Capacity not enough: {} => {}",
+                from_address.display_with_prefix(network_type),
+                take_capacity,
+            ));
+        }
+        Ok(infos)
+    }
+
+    fn collect_prepare_cells(&mut self, target_capacity: u64) -> Result<Vec<LiveCellInfo>, String> {
+        let genesis_info = self.chain_client.genesis_info()?;
+        let secp_type_hash = self.chain_client.secp_type_hash()?;
+        let network_type = self.chain_client.network_type()?;
+        let from_address = self.transact_args().address.clone();
+        let chain_client = &mut self.chain_client;
+        let index_client = &mut self.index_client;
+        let mut enough = false;
+        let mut take_capacity = 0;
+        let terminator = |_, info: &LiveCellInfo| {
+            if Ok(true) != can_withdraw(chain_client, info) {
+                return (false, false);
+            }
+
+            let max_withdrawal: u64 = chain_client
+                .calculate_dao_maximum_withdraw(&info)
+                .expect("RPC calculate_dao_maximum_withdraw for a prepare cell");
+            if max_withdrawal == target_capacity {
+                take_capacity = max_withdrawal;
+                enough = true;
+                (true, true)
+            } else {
+                (false, false)
+            }
+        };
+
+        let infos: Vec<LiveCellInfo> = {
+            index_client.with_db(network_type, genesis_info, |db| {
+                db.get_live_cells_by_lock(
+                    from_address
+                        .lock_script(secp_type_hash.clone())
+                        .calc_script_hash(),
+                    None,
+                    terminator,
+                )
+            })?
+        };
+
+        if !enough {
+            return Err(format!(
+                "Capacity not enough: {} => {}",
+                from_address.display_with_prefix(network_type),
+                take_capacity,
+            ));
+        }
+        Ok(infos)
     }
 
     fn send_transaction(&mut self, transaction: TransactionView) -> Result<String, String> {
