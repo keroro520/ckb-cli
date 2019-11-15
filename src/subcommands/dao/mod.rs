@@ -183,7 +183,7 @@ impl<'a> DAOSubCommand<'a> {
             let maximum_withdraw = self
                 .chain_client
                 .calculate_dao_maximum_withdraw(&info)
-                .expect("calculate_dao_maximum_withdraw failed; TODO");
+                .expect("calculate_dao_maximum_withdraw failed");
             total_maximum_withdraw += maximum_withdraw;
             (info, maximum_withdraw)
         });

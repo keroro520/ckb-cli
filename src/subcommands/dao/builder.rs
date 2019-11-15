@@ -168,11 +168,14 @@ impl DAOBuilder {
             self.txo_headers(chain_client, deposit_out_points)?
         };
 
-        let inputs = prepare_txo_headers.iter().map(|(out_point, _, header)| {
-            let minimal_unlock_point = self.minimal_unlock_point(header);
-            let since = since_from_absolute_epoch_number(minimal_unlock_point.full_value());
-            CellInput::new(out_point.clone(), since)
-        });
+        let inputs = deposit_txo_headers
+            .iter()
+            .zip(prepare_txo_headers.iter())
+            .map(|((_, _, deposit_header), (out_point, _, prepare_header))| {
+                let minimal_unlock_point = minimal_unlock_point(deposit_header, prepare_header);
+                let since = since_from_absolute_epoch_number(minimal_unlock_point.full_value());
+                CellInput::new(out_point.clone(), since)
+            });
         let total_capacity = deposit_txo_headers
             .iter()
             .zip(prepare_txo_headers.iter())
@@ -254,27 +257,91 @@ impl DAOBuilder {
         }
         Ok(ret)
     }
-
-    fn minimal_unlock_point(&self, deposit_header: &HeaderView) -> EpochNumberWithFraction {
-        const LOCK_PERIOD_EPOCHES: EpochNumber = 180;
-        let deposit_point = deposit_header.epoch();
-        EpochNumberWithFraction::new(
-            deposit_point.number() + LOCK_PERIOD_EPOCHES,
-            deposit_point.index(),
-            deposit_point.length(),
-        )
-    }
 }
 
-fn dao_type_script(chain_client: &mut ChainClient) -> Result<Script, String> {
+pub fn minimal_unlock_point(
+    deposit_header: &HeaderView,
+    prepare_header: &HeaderView,
+) -> EpochNumberWithFraction {
+    const LOCK_PERIOD_EPOCHES: EpochNumber = 180;
+
+    // https://github.com/nervosnetwork/ckb-system-scripts/blob/master/c/dao.c#L182-L223
+    let deposit_point = deposit_header.epoch();
+    let prepare_point = prepare_header.epoch();
+    let prepare_fraction = prepare_point.index() * deposit_point.length();
+    let deposit_fraction = deposit_point.index() * prepare_point.length();
+    let passed_epoch_cnt = if prepare_fraction > deposit_fraction {
+        prepare_point.number() - deposit_point.number() + 1
+    } else {
+        prepare_point.number() - deposit_point.number()
+    };
+    let rest_epoch_cnt =
+        (passed_epoch_cnt + (LOCK_PERIOD_EPOCHES - 1)) / LOCK_PERIOD_EPOCHES * LOCK_PERIOD_EPOCHES;
+    EpochNumberWithFraction::new(
+        deposit_point.number() + rest_epoch_cnt,
+        deposit_point.index(),
+        deposit_point.length(),
+    )
+}
+
+pub fn dao_type_script(chain_client: &mut ChainClient) -> Result<Script, String> {
     Ok(Script::new_builder()
         .hash_type(ScriptHashType::Type.into())
         .code_hash(chain_client.dao_type_hash()?)
         .build())
 }
 
-fn since_from_absolute_epoch_number(epoch_number: EpochNumber) -> u64 {
+pub fn since_from_absolute_epoch_number(epoch_number: EpochNumber) -> u64 {
     const FLAG_SINCE_EPOCH_NUMBER: u64 =
         0b010_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000;
     FLAG_SINCE_EPOCH_NUMBER | epoch_number
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ckb_types::core::HeaderBuilder;
+
+    #[test]
+    fn test_minimal_unlock_point() {
+        let cases = vec![
+            ((5, 5, 1000), (184, 4, 1000), (5 + 180, 5, 1000)),
+            ((5, 5, 1000), (184, 5, 1000), (5 + 180, 5, 1000)),
+            ((5, 5, 1000), (184, 6, 1000), (5 + 180, 5, 1000)),
+            ((5, 5, 1000), (185, 4, 1000), (5 + 180, 5, 1000)),
+            ((5, 5, 1000), (185, 5, 1000), (5 + 180, 5, 1000)),
+            ((5, 5, 1000), (185, 6, 1000), (5 + 180 * 2, 5, 1000)), // 6/1000 > 5/1000
+            ((5, 5, 1000), (186, 4, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (186, 5, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (186, 6, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (364, 4, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (364, 5, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (364, 6, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (365, 4, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (365, 5, 1000), (5 + 180 * 2, 5, 1000)),
+            ((5, 5, 1000), (365, 6, 1000), (5 + 180 * 3, 5, 1000)),
+            ((5, 5, 1000), (366, 4, 1000), (5 + 180 * 3, 5, 1000)),
+            ((5, 5, 1000), (366, 5, 1000), (5 + 180 * 3, 5, 1000)),
+            ((5, 5, 1000), (366, 6, 1000), (5 + 180 * 3, 5, 1000)),
+        ];
+        for (deposit_point, prepare_point, expected) in cases {
+            let deposit_point =
+                EpochNumberWithFraction::new(deposit_point.0, deposit_point.1, deposit_point.2);
+            let prepare_point =
+                EpochNumberWithFraction::new(prepare_point.0, prepare_point.1, prepare_point.2);
+            let expected = EpochNumberWithFraction::new(expected.0, expected.1, expected.2);
+            let deposit_header = HeaderBuilder::default()
+                .epoch(deposit_point.full_value().pack())
+                .build();
+            let prepare_header = HeaderBuilder::default()
+                .epoch(prepare_point.full_value().pack())
+                .build();
+            let actual = minimal_unlock_point(&deposit_header, &prepare_header);
+            assert_eq!(
+                expected, actual,
+                "minimal_unlock_point deposit_point: {}, prepare_point: {}, expected: {}, actual: {}",
+                deposit_point, prepare_point, expected, actual,
+            );
+        }
+    }
 }
