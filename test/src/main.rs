@@ -1,11 +1,21 @@
+mod miner;
+mod spec;
+mod util;
+
 use std::env;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::Duration;
 
+use crate::spec::{
+    PrepareAtEndOfFirstPeriod, PrepareInFirstPeriod, PrepareInSecondPeriod, Setup, Spec,
+};
+use crate::util::run_cmd;
 use clap::{App, Arg};
 use tempfile::{tempdir, TempDir};
+
+// TODO dynamic rpc port
+const RPC_PORT: u16 = 8114;
+const P2P_PORT: u16 = 9114;
 
 fn main() {
     let _ = {
@@ -43,8 +53,13 @@ fn main() {
         cli_bin
     );
 
+    for spec in all_specs() {
+        run_spec(spec, ckb_bin, cli_bin);
+    }
+}
+
+fn run_spec(spec: Box<dyn Spec>, ckb_bin: &str, cli_bin: &str) {
     let (tmpdir, ckb_dir) = temp_dir();
-    log::info!("ckb init: {}", ckb_dir);
     let _stdout = run_cmd(
         ckb_bin,
         vec![
@@ -54,47 +69,42 @@ fn main() {
             "--chain",
             "dev",
             "--rpc-port",
-            "9000",
+            &RPC_PORT.to_string(),
             "--p2p-port",
-            "9001",
+            &P2P_PORT.to_string(),
         ],
     );
 
-    log::info!("ckb run");
-    let child_process = Command::new(ckb_bin.to_owned())
+    let setup = Setup {
+        ckb_dir,
+        ckb_bin: ckb_bin.to_string(),
+        cli_bin: cli_bin.to_string(),
+        rpc_port: RPC_PORT,
+    };
+    setup.modify_ckb_toml(&*spec);
+    setup.modify_spec_toml(&*spec);
+
+    let child_process = Command::new(&setup.ckb_bin)
         .env("RUST_BACKTRACE", "full")
-        .args(&["-C", ckb_dir.as_str(), "run", "--ba-advanced"])
+        .args(&["-C", &setup.ckb_dir, "run", "--ba-advanced"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
         .expect("Run `ckb run` failed");
     let _guard = ProcessGuard(child_process);
-    thread::sleep(Duration::from_secs(3));
 
-    log::info!(
-        "[Output]:\n{}",
-        run_cmd(
-            cli_bin,
-            vec!["--url", "http://127.0.0.1:9000", "rpc", "get_tip_header"]
-        )
-    );
+    spec.run(&setup);
+
     tmpdir.close().expect("Close tmp dir failed");
 }
 
-fn run_cmd(bin: &str, args: Vec<&str>) -> String {
-    log::info!("[Execute]: {:?}", args);
-    let init_output = Command::new(bin.to_owned())
-        .env("RUST_BACKTRACE", "full")
-        .args(&args)
-        .output()
-        .expect("Run command failed");
-
-    if !init_output.status.success() {
-        log::error!("{}", String::from_utf8_lossy(init_output.stderr.as_slice()));
-        panic!("Fail to execute command");
-    }
-    String::from_utf8_lossy(init_output.stdout.as_slice()).to_string()
+fn all_specs() -> Vec<Box<dyn Spec>> {
+    vec![
+        Box::new(PrepareInFirstPeriod),
+        Box::new(PrepareAtEndOfFirstPeriod),
+        Box::new(PrepareInSecondPeriod),
+    ]
 }
 
 struct ProcessGuard(pub Child);
