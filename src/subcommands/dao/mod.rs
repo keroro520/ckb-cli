@@ -9,7 +9,8 @@ use crate::utils::arg_parser::{
 use crate::utils::other::{get_address, read_password};
 use crate::utils::printer::{OutputFormat, Printable};
 use ckb_index::LiveCellInfo;
-use ckb_sdk::{Address, MIN_SECP_CELL_CAPACITY, Address, AddressPayload, NetworkType, SECP256K1};
+use ckb_sdk::constants::MIN_SECP_CELL_CAPACITY;
+use ckb_sdk::{Address, AddressPayload, NetworkType, SECP256K1};
 use ckb_types::core::{Capacity, TransactionView};
 use ckb_types::packed::{Byte32, CellOutput, Script};
 use ckb_types::prelude::*;
@@ -104,8 +105,9 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
+        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
         self.check_db_ready()?;
         let target_capacity = self.transact_args().capacity;
         let tx_fee = self.transact_args().tx_fee;
@@ -124,8 +126,9 @@ impl<'a> DAOSubCommand<'a> {
         color: bool,
         debug: bool,
     ) -> Result<String, String> {
+        let network_type = self.chain_client.network_type()?;
         self.output_style = (format, color, debug);
-        self.transact_args = Some(TransactArgs::from_matches(m)?);
+        self.transact_args = Some(TransactArgs::from_matches(m, network_type)?);
         self.check_db_ready()?;
 
         let target_capacity = self.transact_args().capacity + self.transact_args().tx_fee;
@@ -288,7 +291,6 @@ impl<'a> DAOSubCommand<'a> {
 
     fn collect_secp_cells(&mut self, target_capacity: u64) -> Result<Vec<LiveCellInfo>, String> {
         let genesis_info = self.chain_client.genesis_info()?;
-        let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let chain_client = &mut self.chain_client;
@@ -302,7 +304,7 @@ impl<'a> DAOSubCommand<'a> {
 
             take_capacity += info.capacity;
             if take_capacity == target_capacity
-                || take_capacity >= target_capacity + *MIN_SECP_CELL_CAPACITY
+                || take_capacity >= target_capacity + MIN_SECP_CELL_CAPACITY
             {
                 enough = true;
             }
@@ -312,9 +314,7 @@ impl<'a> DAOSubCommand<'a> {
         let infos: Vec<LiveCellInfo> = {
             index_client.with_db(network_type, genesis_info, |db| {
                 db.get_live_cells_by_lock(
-                    from_address
-                        .lock_script(secp_type_hash.clone())
-                        .calc_script_hash(),
+                    Script::from(from_address.payload()).calc_script_hash(),
                     None,
                     terminator,
                 )
@@ -324,8 +324,7 @@ impl<'a> DAOSubCommand<'a> {
         if !enough {
             return Err(format!(
                 "Capacity not enough: {} => {}",
-                from_address.display_with_prefix(network_type),
-                take_capacity,
+                from_address, take_capacity,
             ));
         }
         Ok(infos)
@@ -333,7 +332,6 @@ impl<'a> DAOSubCommand<'a> {
 
     fn collect_deposit_cells(&mut self, target_capacity: u64) -> Result<Vec<LiveCellInfo>, String> {
         let genesis_info = self.chain_client.genesis_info()?;
-        let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let chain_client = &mut self.chain_client;
@@ -357,9 +355,7 @@ impl<'a> DAOSubCommand<'a> {
         let infos: Vec<LiveCellInfo> = {
             index_client.with_db(network_type, genesis_info, |db| {
                 db.get_live_cells_by_lock(
-                    from_address
-                        .lock_script(secp_type_hash.clone())
-                        .calc_script_hash(),
+                    Script::from(from_address.payload()).calc_script_hash(),
                     None,
                     terminator,
                 )
@@ -369,8 +365,7 @@ impl<'a> DAOSubCommand<'a> {
         if !enough {
             return Err(format!(
                 "Capacity not enough: {} => {}",
-                from_address.display_with_prefix(network_type),
-                take_capacity,
+                from_address, take_capacity,
             ));
         }
         Ok(infos)
@@ -378,7 +373,6 @@ impl<'a> DAOSubCommand<'a> {
 
     fn collect_prepare_cells(&mut self, target_capacity: u64) -> Result<Vec<LiveCellInfo>, String> {
         let genesis_info = self.chain_client.genesis_info()?;
-        let secp_type_hash = self.chain_client.secp_type_hash()?;
         let network_type = self.chain_client.network_type()?;
         let from_address = self.transact_args().address.clone();
         let chain_client = &mut self.chain_client;
@@ -405,9 +399,7 @@ impl<'a> DAOSubCommand<'a> {
         let infos: Vec<LiveCellInfo> = {
             index_client.with_db(network_type, genesis_info, |db| {
                 db.get_live_cells_by_lock(
-                    from_address
-                        .lock_script(secp_type_hash.clone())
-                        .calc_script_hash(),
+                    Script::from(from_address.payload()).calc_script_hash(),
                     None,
                     terminator,
                 )
@@ -417,8 +409,7 @@ impl<'a> DAOSubCommand<'a> {
         if !enough {
             return Err(format!(
                 "Capacity not enough: {} => {}",
-                from_address.display_with_prefix(network_type),
-                take_capacity,
+                from_address, take_capacity,
             ));
         }
         Ok(infos)

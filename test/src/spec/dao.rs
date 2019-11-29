@@ -1,7 +1,6 @@
 use crate::miner::Miner;
 use crate::spec::{Setup, Spec};
 use ckb_chain_spec::ChainSpec;
-use ckb_sdk::NetworkType;
 use ckb_types::core::EpochNumber;
 
 const EPOCH_LENGTH: u64 = 1;
@@ -36,7 +35,7 @@ impl Spec for PrepareInFirstPeriod {
         // Withdraw
         miner.generate_blocks(closest + 1 + LOCK_PERIOD_EPOCHES);
         query_prepare_live_cells(setup);
-        let output = withdraw(setup, 1156.0, 0.618_247_71);
+        let output = withdraw(setup, 1103.0, 0.109_542_69);
         assert_eq!(output.len(), 66, "{}", output);
         miner.generate_blocks(closest + 1);
         let output = withdraw(setup, 102.0, 0.000_000_01);
@@ -83,7 +82,7 @@ impl Spec for PrepareAtEndOfFirstPeriod {
 
         // Withdraw
         query_prepare_live_cells(setup);
-        let output = withdraw(setup, 1769.0, 0.362_447_81);
+        let output = withdraw(setup, 1106.0, 0.270_112_07);
         assert_eq!(output.len(), 66, "{}", output);
     }
 
@@ -123,11 +122,11 @@ impl Spec for PrepareInSecondPeriod {
 
         // Withdraw, should fail by immature
         query_prepare_live_cells(setup);
-        let output = withdraw(setup, 1781.0, 0.065_078_39);
+        let output = withdraw(setup, 1106.0, 0.378_544_20);
         assert!(output.contains("Immature"), "{}", output);
 
         miner.generate_blocks(deposit_number + 2 * LOCK_PERIOD_EPOCHES - (closest + 1));
-        let output = withdraw(setup, 1781.0, 0.065_078_39);
+        let output = withdraw(setup, 1106.0, 0.378_544_20);
         assert_eq!(output.len(), 66, "{}", output);
     }
 
@@ -174,7 +173,7 @@ fn query_deposit_live_cells(setup: &Setup) -> String {
     ensure_sync(setup);
     let output = setup.cli(&format!(
         "dao query-deposited-live-cells --address {}",
-        Setup::address().display_with_prefix(NetworkType::TestNet),
+        Setup::address(),
     ));
     println!("dao query-deposited-live-cells: {}", output);
     output
@@ -184,7 +183,7 @@ fn query_prepare_live_cells(setup: &Setup) -> String {
     ensure_sync(setup);
     let output = setup.cli(&format!(
         "dao query-prepared-live-cells --address {}",
-        Setup::address().display_with_prefix(NetworkType::TestNet),
+        Setup::address(),
     ));
     println!("dao query-prepared-live-cells: {}", output);
     output

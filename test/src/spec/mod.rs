@@ -5,7 +5,7 @@ pub use dao::*;
 use ckb_app_config::{BlockAssemblerConfig, CKBAppConfig};
 use ckb_chain_spec::consensus::Consensus;
 use ckb_chain_spec::ChainSpec;
-use ckb_sdk::Address;
+use ckb_sdk::{Address, AddressPayload, NetworkType};
 use ckb_types::H160;
 use std::fs;
 use std::io::Write;
@@ -37,7 +37,8 @@ impl Setup {
             lock_arg.copy_from_slice(Setup::block_assembler().args.as_bytes());
             H160(lock_arg)
         };
-        Address::new_default(lock_arg)
+        let payload = AddressPayload::from_pubkey_hash(lock_arg);
+        Address::new(NetworkType::Testnet, payload)
     }
 
     pub fn rpc_url(&self) -> String {
@@ -71,7 +72,7 @@ impl Setup {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stderr.contains("index database may not ready") {
                 continue;
-            } else if !stderr.is_empty() {
+            } else if !stderr.is_empty() && !stderr.contains("No previous history.") {
                 return stderr.to_string();
             } else {
                 return extract_output(stdout.to_string());
