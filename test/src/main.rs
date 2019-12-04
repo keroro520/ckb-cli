@@ -9,13 +9,9 @@ use std::process::{Child, Command, Stdio};
 use crate::spec::{
     PrepareAtEndOfFirstPeriod, PrepareInFirstPeriod, PrepareInSecondPeriod, Setup, Spec,
 };
-use crate::util::run_cmd;
+use crate::util::{find_available_port, run_cmd};
 use clap::{App, Arg};
 use tempfile::{tempdir, TempDir};
-
-// TODO dynamic rpc port
-const RPC_PORT: u16 = 8114;
-const P2P_PORT: u16 = 9114;
 
 fn main() {
     let _ = {
@@ -60,6 +56,8 @@ fn main() {
 
 fn run_spec(spec: Box<dyn Spec>, ckb_bin: &str, cli_bin: &str) {
     let (tmpdir, ckb_dir) = temp_dir();
+    let rpc_port = find_available_port(8114, 8999);
+    let p2p_port = find_available_port(9114, 9999);
     let _stdout = run_cmd(
         ckb_bin,
         vec![
@@ -69,9 +67,9 @@ fn run_spec(spec: Box<dyn Spec>, ckb_bin: &str, cli_bin: &str) {
             "--chain",
             "dev",
             "--rpc-port",
-            &RPC_PORT.to_string(),
+            &rpc_port.to_string(),
             "--p2p-port",
-            &P2P_PORT.to_string(),
+            &p2p_port.to_string(),
         ],
     );
 
@@ -79,7 +77,7 @@ fn run_spec(spec: Box<dyn Spec>, ckb_bin: &str, cli_bin: &str) {
         ckb_dir,
         ckb_bin: ckb_bin.to_string(),
         cli_bin: cli_bin.to_string(),
-        rpc_port: RPC_PORT,
+        rpc_port,
     };
     setup.modify_ckb_toml(&*spec);
     setup.modify_spec_toml(&*spec);

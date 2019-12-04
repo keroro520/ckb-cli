@@ -1,3 +1,4 @@
+use std::net::TcpListener;
 use std::process::Command;
 
 pub fn run_cmd(bin: &str, args: Vec<&str>) -> String {
@@ -13,4 +14,13 @@ pub fn run_cmd(bin: &str, args: Vec<&str>) -> String {
         panic!("Fail to execute command");
     }
     String::from_utf8_lossy(init_output.stdout.as_slice()).to_string()
+}
+
+pub fn find_available_port(start: u16, end: u16) -> u16 {
+    for port in start..=end {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    unreachable!()
 }

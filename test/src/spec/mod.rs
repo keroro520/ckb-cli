@@ -56,6 +56,7 @@ impl Setup {
         log::info!("[Execute]: {}", command);
         loop {
             let mut child = Command::new(&self.cli_bin)
+                .args(vec!["--url", &self.rpc_url()])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
