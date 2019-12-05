@@ -19,6 +19,7 @@ use crossbeam_channel::{Receiver, Sender};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::utils::other::get_network_type;
+use std::thread::sleep;
 
 pub enum IndexRequest {
     UpdateUrl(String),
@@ -256,6 +257,7 @@ fn process(
         return Ok(exit);
     }
 
+    sleep(Duration::from_secs(20));
     state.write().start_init();
     if &old_rpc_url != rpc_url {
         *rpc_client = HttpRpcClient::from_uri(rpc_url.as_str());
