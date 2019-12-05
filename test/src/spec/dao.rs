@@ -17,6 +17,7 @@ impl Spec for PrepareInFirstPeriod {
         miner.generate_blocks(farthest + 3);
 
         // Deposit
+        ensure_sync(setup);
         let output = deposit(setup, 1103.0, 1.0);
         assert_eq!(output.len(), 66, "{}", output);
         miner.generate_blocks(closest + 1);

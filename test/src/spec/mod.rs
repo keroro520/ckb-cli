@@ -139,5 +139,10 @@ fn extract_output(content: String) -> String {
         lines.skip_while(|line| !regex::Regex::new(r#"\[.*\]: .*"#).unwrap().is_match(line));
     let lines = lines.skip_while(|line| regex::Regex::new(r#"\[.*\]: .*"#).unwrap().is_match(line));
     let lines = lines.take_while(|line| *line != "CTRL-D");
-    lines.collect::<Vec<_>>().join("\n")
+    let output: String = lines.collect::<Vec<_>>().join("\n");
+    if !output.is_empty() {
+        output
+    } else {
+        content
+    }
 }
