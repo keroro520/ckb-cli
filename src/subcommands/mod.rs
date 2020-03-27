@@ -9,6 +9,7 @@ pub mod tui;
 pub mod tx;
 pub mod util;
 pub mod wallet;
+pub mod forty;
 
 #[cfg(unix)]
 pub use self::tui::TuiSubCommand;
@@ -22,6 +23,7 @@ pub use rpc::RpcSubCommand;
 pub use tx::TxSubCommand;
 pub use util::UtilSubCommand;
 pub use wallet::{start_index_thread, LiveCells, TransferArgs, WalletSubCommand};
+pub use forty::FortySubCommand;
 
 use clap::ArgMatches;
 

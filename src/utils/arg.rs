@@ -128,6 +128,28 @@ pub fn to_data_path<'a, 'b>() -> Arg<'a, 'b> {
         .help("Data binary file path store in target cell (optional)")
 }
 
+pub fn amount<'a, 'b>() -> Arg<'a, 'b> {
+    Arg::with_name("amount")
+        .long("amount")
+        .takes_value(true)
+        .validator(|input| {
+            input.parse::<u64>()
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+        })
+}
+
+pub fn nonce<'a, 'b>() -> Arg<'a, 'b> {
+    Arg::with_name("nonce")
+        .long("nonce")
+        .takes_value(true)
+        .validator(|input| {
+            input.parse::<u64>()
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+        })
+}
+
 pub fn capacity<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name("capacity")
         .long("capacity")
