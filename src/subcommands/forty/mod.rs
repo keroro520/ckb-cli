@@ -18,15 +18,15 @@ use ckb_types::{
 use itertools::Itertools;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use crate::subcommands::forty::command::{IssueArgs, TransactArgs};
-use crate::utils::arg_parser::PrivkeyWrapper;
-use crate::subcommands::forty::builder::FortyBuilder;
+pub use crate::subcommands::forty::command::{IssueArgs, TransactArgs};
+pub use crate::utils::arg_parser::PrivkeyWrapper;
+pub use crate::subcommands::forty::builder::FortyBuilder;
 use ckb_types::packed::CellDep;
 use crate::subcommands::dao::take_by_out_points;
 
-mod builder;
-mod command;
-mod util;
+pub mod builder;
+pub mod command;
+pub mod util;
 
 // TODO 之后改掉。这里只是为了保证之后的操作有足够的 fee，偷个懒
 const MIN_FT_CELL_CAPACITY: u64 = MIN_SECP_CELL_CAPACITY + 100 * 100;
@@ -67,7 +67,8 @@ impl<'a> FortySubCommand<'a> {
         let target_ckb_capacity = MIN_FT_CELL_CAPACITY + TX_FEE;
         let sender_address = self.issue_args().sender_address().clone();
         let cells = self.collect_sighash_cells(sender_address, target_ckb_capacity)?;
-        let raw_transaction = self.build(cells).issue(&self.issue_args.unwrap())?;
+        let raw_transaction = self.build(cells).issue(
+            self.issue_args.as_ref().unwrap())?;
         self.sign(raw_transaction)
     }
 
@@ -82,12 +83,15 @@ impl<'a> FortySubCommand<'a> {
 
         let ft_cells = self.collect_sender_ft_cells()?;
         let ft_cells = take_by_out_points(ft_cells, &out_points)?;
-        let raw_transaction = self.build(ft_cells).transfer(&self.transact_args.unwrap())?;
+        // let raw_transaction = self.build(ft_cells).transfer(&self.transact_args.unwrap())?;
+        // FIXME 这里先 mock proof 了
+        let raw_transaction = self.build(ft_cells).transfer(
+            self.transact_args.as_ref().unwrap(), Default::default())?;
         self.sign(raw_transaction)
     }
 
     pub fn collect_sender_ft_cells(&mut self) -> Result<Vec<LiveCellInfo>, String>{
-        let ft_type_hash = self.ft_type_hash().clone();
+        let ft_type_hash = self.ft_type_hash();
         let lock_hash = self.sender_lock_hash();
         self.with_db(|db, _| {
             let cells_by_lock = db
@@ -138,7 +142,7 @@ impl<'a> FortySubCommand<'a> {
         let transaction = self.install_receiver_sighash_lock(transaction);
 
         // 2. Install signed sighash witnesses
-        let transaction = self.install_sighash_witness(transaction)?;
+        let transaction = self.install_sender_sighash_witness(transaction)?;
 
         Ok(transaction)
     }
@@ -265,11 +269,9 @@ impl<'a> FortySubCommand<'a> {
         };
 
         if !enough {
-            return Err(format!(
-                "Capacity not enough: {} => {}",
-                from_address, take_capacity,
-            ));
+            return Err("CKB Capacity not enough".to_string());
         }
+
         Ok(cells)
     }
 
@@ -281,14 +283,14 @@ impl<'a> FortySubCommand<'a> {
         self.transact_args.as_ref().expect("exist")
     }
 
-    pub(crate) fn rpc_client(&mut self) -> &mut HttpRpcClient {
+    pub fn rpc_client(&mut self) -> &mut HttpRpcClient {
         &mut self.rpc_client
     }
 
     fn receiver_sighash_args(&self) -> H160 {
-        if let Some(ref issue_args) = self.issue_args {
+        if let Some(ref issue_args) = self.issue_args.as_ref() {
             issue_args.receiver_sighash_args()
-        } else if let Some(transact_args) = self.transact_args {
+        } else if let Some(transact_args) = self.transact_args.as_ref() {
             transact_args.receiver_sighash_args()
         } else {
             unreachable!()
@@ -296,9 +298,9 @@ impl<'a> FortySubCommand<'a> {
     }
 
     fn sender_sighash_args(&self) -> H160 {
-        if let Some(ref issue_args) = self.issue_args {
+        if let Some(ref issue_args) = self.issue_args.as_ref() {
             issue_args.sender_sighash_args()
-        } else if let Some(transact_args) = self.transact_args {
+        } else if let Some(transact_args) = self.transact_args.as_ref() {
             transact_args.sender_sighash_args()
         } else {
             unreachable!()
@@ -306,9 +308,9 @@ impl<'a> FortySubCommand<'a> {
     }
 
     fn sender_lock_hash(&self) -> Byte32 {
-        if let Some(ref issue_args) = self.issue_args {
+        if let Some(ref issue_args) = self.issue_args.as_ref() {
             issue_args.sender_lock_hash()
-        } else if let Some(transact_args) = self.transact_args {
+        } else if let Some(transact_args) = self.transact_args.as_ref() {
             transact_args.sender_lock_hash()
         } else {
             unreachable!()
@@ -316,10 +318,20 @@ impl<'a> FortySubCommand<'a> {
     }
 
     pub fn sender_privkey(&self) -> &PrivkeyWrapper {
-        if let Some(ref issue_args) = self.issue_args {
+        if let Some(ref issue_args) = self.issue_args.as_ref() {
             issue_args.sender_privkey()
-        } else if let Some(transact_args) = self.transact_args {
+        } else if let Some(transact_args) = self.transact_args.as_ref() {
             transact_args.sender_privkey()
+        } else {
+            unreachable!()
+        }
+    }
+
+    pub fn ft_type_hash(&self) -> Byte32 {
+        if let Some(ref issue_args) = self.issue_args.as_ref() {
+            issue_args.ft_type_script().calc_script_hash()
+        } else if let Some(transact_args) = self.transact_args.as_ref() {
+            transact_args.ft_type_script().calc_script_hash()
         } else {
             unreachable!()
         }

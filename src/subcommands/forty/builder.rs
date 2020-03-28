@@ -8,19 +8,23 @@ use ckb_types::{
 };
 use std::collections::HashSet;
 use crate::subcommands::forty::command::{IssueArgs, TransactArgs};
-use ckb_types::packed::{CellDep, Byte32, Bytes};
+use ckb_types::packed::{CellDep, Byte32, Bytes, BytesOpt};
 use ckb_sdk::constants::MIN_SECP_CELL_CAPACITY;
+
+pub struct ZKProof {
+    // TODO
+}
 
 // NOTE: We assume all inputs are from same account
 #[derive(Debug)]
-pub(crate) struct FortyBuilder {
+pub struct FortyBuilder {
     genesis_info: GenesisInfo,
     tx_fee: u64,
     live_cells: Vec<LiveCellInfo>,
 }
 
 impl FortyBuilder {
-    pub(crate) fn new(
+    pub fn new(
         genesis_info: GenesisInfo,
         tx_fee: u64,
         live_cells: Vec<LiveCellInfo>,
@@ -33,7 +37,7 @@ impl FortyBuilder {
     }
 
     // NOTE: Only support 1 output by now
-    pub(crate) fn issue(&self, issue_args: &IssueArgs) -> Result<TransactionView, String> {
+    pub fn issue(&self, issue_args: &IssueArgs) -> Result<TransactionView, String> {
         // let genesis_info = &self.genesis_info;
         let inputs = self
             .live_cells
@@ -44,15 +48,7 @@ impl FortyBuilder {
             .iter()
             .map(|_| Default::default())
             .collect::<Vec<_>>();
-        let ft_type_script = {
-            let ft_code_hash = issue_args.ft_code_hash();
-            let ft_lock_args = issue_args.ft_lock_args();
-            Script::new_builder()
-                .hash_type(ScriptHashType::Data.into())
-                .code_hash(ft_code_hash)
-                .args(ft_lock_args)
-                .build()
-        };
+        let ft_type_script = issue_args.ft_type_script();
         let (output, output_data) = {
             // OutputData Format: [amount_hash, encrypted_amount]
             let output_data = issue_args.ft_output_data();
@@ -61,9 +57,8 @@ impl FortyBuilder {
             let output = CellOutput::new_builder()
                 .type_(Some(ft_type_script).pack())
                 .build_exact_capacity(
-                    Capacity::bytes(output_data.len()).unwrap().unwrap()
-                )
-                .build();
+                    Capacity::bytes(output_data.len()).unwrap()
+                ).expect("build issued FT output");
             (output, output_data)
         };
         let cell_deps = vec![issue_args.ft_cell_dep()];
@@ -91,31 +86,28 @@ impl FortyBuilder {
         } else {
             Ok(tx.build())
         }
-        Ok(tx.build())
     }
 
     // NOTE: Only support 1 output by now
-    pub(crate) fn transfer(&self, transact_args: &TransactArgs) -> Result<TransactionView, String> {
+    pub fn transfer(&self, transact_args: &TransactArgs, proof: Bytes) -> Result<TransactionView, String> {
         // let genesis_info = &self.genesis_info;
         let inputs = self
             .live_cells
             .iter()
             .map(|txo| CellInput::new(txo.out_point(), 0))
             .collect::<Vec<_>>();
-        // TODO witness 要改
+        // NOTE: As for transfer, Witness.output_type holds zk-proof
         let witnesses = inputs
             .iter()
-            .map(|_| Default::default())
+            .map(|_| {
+                let output_type_witness = BytesOpt::new_builder().set(Some(proof.clone())).build();
+                WitnessArgs::new_builder()
+                    .output_type(output_type_witness)
+                    .build()
+                    .as_bytes()
+            })
             .collect::<Vec<_>>();
-        let ft_type_script = {
-            let ft_code_hash = transact_args.ft_code_hash();
-            let ft_lock_args = transact_args.ft_lock_args();
-            Script::new_builder()
-                .hash_type(ScriptHashType::Data.into())
-                .code_hash(ft_code_hash)
-                .args(ft_lock_args)
-                .build()
-        };
+        let ft_type_script = transact_args.ft_type_script();
         let (output, output_data) = {
             // OutputData Format: [amount_hash, encrypted_amount]
             let output_data = transact_args.ft_output_data();
@@ -131,7 +123,7 @@ impl FortyBuilder {
                 Capacity::bytes(output_data.len()).unwrap()
             ).expect("output.occupied_capacity()");
             assert!(
-                occupied.as_u64() + self.tx_fee <= input_capacity
+                occupied.as_u64() + self.tx_fee <= input_capacity,
                 "output.occupied_capacity() + tx_fee > input.capacity()",
             );
 
@@ -143,7 +135,7 @@ impl FortyBuilder {
             .output(output.clone())
             .output_data(output_data)
             .cell_deps(cell_deps)
-            .witnesses(witnesses);
+            .witnesses(witnesses.into_iter().map(|w| w.pack()).collect::<Vec<_>>());
 
         // Handle the CKB change problem (Reiterate, it's not FT Token change)
         //

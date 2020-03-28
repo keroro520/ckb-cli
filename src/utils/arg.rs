@@ -79,6 +79,14 @@ pub fn lock_arg<'a, 'b>() -> Arg<'a, 'b> {
         .help("Lock argument (account identifier, blake2b(pubkey)[0..20])")
 }
 
+pub fn ft_lock_arg<'a, 'b>() -> Arg<'a, 'b> {
+    Arg::with_name("ft-lock-arg")
+        .long("ft-lock-arg")
+        .takes_value(true)
+        .validator(|input| FixedHashParser::<H160>::default().validate(input))
+        .help("FT type script arg, which is identifier of the token")
+}
+
 pub fn from_account<'a, 'b>() -> Arg<'a, 'b> {
     Arg::with_name("from-account")
         .long("from-account")
@@ -180,6 +188,14 @@ pub fn code_hash<'a, 'b>() -> Arg<'a, 'b> {
         .takes_value(true)
         .validator(|input| FixedHashParser::<H256>::default().validate(input))
         .help("The type script's code hash")
+}
+
+pub fn ft_code_hash<'a, 'b>() -> Arg<'a, 'b> {
+    Arg::with_name("ft-code-hash")
+        .long("ft-code-hash")
+        .takes_value(true)
+        .validator(|input| FixedHashParser::<H256>::default().validate(input))
+        .help("The FT type script's code hash")
 }
 
 pub fn live_cells_limit<'a, 'b>() -> Arg<'a, 'b> {
