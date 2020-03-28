@@ -1,5 +1,3 @@
-use self::builder::DAOBuilder;
-use self::command::TransactArgs;
 use crate::utils::index::IndexController;
 use crate::utils::other::{
     get_max_mature_number, get_network_type, get_privkey_signer, is_mature, read_password,
@@ -23,11 +21,15 @@ use std::path::PathBuf;
 use crate::subcommands::forty::command::{IssueArgs, TransactArgs};
 use crate::utils::arg_parser::PrivkeyWrapper;
 use crate::subcommands::forty::builder::FortyBuilder;
+use ckb_types::packed::CellDep;
+use crate::subcommands::dao::take_by_out_points;
 
 mod builder;
 mod command;
 mod util;
 
+// TODO 之后改掉。这里只是为了保证之后的操作有足够的 fee，偷个懒
+const MIN_FT_CELL_CAPACITY: u64 = MIN_SECP_CELL_CAPACITY + 100 * 100;
 const TX_FEE: u64 = 1;
 
 pub struct FortySubCommand<'a> {
@@ -59,22 +61,53 @@ impl<'a> FortySubCommand<'a> {
         }
     }
 
+    // Issue, traditional sighash cell => FT cell
     pub fn issue(&mut self) -> Result<TransactionView, String> {
         self.check_db_ready()?;
-        let target_ckb_capacity = MIN_SECP_CELL_CAPACITY + TX_FEE;
+        let target_ckb_capacity = MIN_FT_CELL_CAPACITY + TX_FEE;
         let sender_address = self.issue_args().sender_address().clone();
         let cells = self.collect_sighash_cells(sender_address, target_ckb_capacity)?;
         let raw_transaction = self.build(cells).issue(&self.issue_args.unwrap())?;
         self.sign(raw_transaction)
     }
 
-    pub fn build(&self, cells: Vec<LiveCellInfo>) -> FortyBuilder {
-        FortyBuilder::new(self.genesis_info.clone(), TX_FEE, cells)
-    }
-
+    // NOTE: Assume the FT cell has enough capacity to pay for tx-fee(Archive this by set the
+    // `MIN_FT_CELL_CAPACITY` highly).
+    //
+    // Transfer, FT cell => FT cell
     pub fn transfer(&mut self) -> Result<TransactionView, String> {
         self.check_db_ready()?;
-        Err("bilibili".to_string())
+        let out_point = self.transact_args().out_point.clone();
+        let out_points = vec![out_point];
+
+        let ft_cells = self.collect_sender_ft_cells()?;
+        let ft_cells = take_by_out_points(ft_cells, &out_points)?;
+        let raw_transaction = self.build(ft_cells).transfer(&self.transact_args.unwrap())?;
+        self.sign(raw_transaction)
+    }
+
+    pub fn collect_sender_ft_cells(&mut self) -> Result<Vec<LiveCellInfo>, String>{
+        let ft_type_hash = self.ft_type_hash().clone();
+        let lock_hash = self.sender_lock_hash();
+        self.with_db(|db, _| {
+            let cells_by_lock = db
+                .get_live_cells_by_lock(lock_hash, Some(0), |_, _| (false, true))
+                .into_iter()
+                .collect::<HashSet<_>>();
+            let cells_by_code = db
+                .get_live_cells_by_code(ft_type_hash.clone(), Some(0), |_, _| (false, true))
+                .into_iter()
+                .collect::<HashSet<_>>();
+            cells_by_lock
+                .intersection(&cells_by_code)
+                .sorted_by_key(|live| (live.number, live.tx_index, live.index.output_index))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    }
+
+    pub fn build(&self, cells: Vec<LiveCellInfo>) -> FortyBuilder {
+        FortyBuilder::new(self.genesis_info.clone(), TX_FEE, cells)
     }
 
     fn check_db_ready(&mut self) -> Result<(), String> {
@@ -267,6 +300,16 @@ impl<'a> FortySubCommand<'a> {
             issue_args.sender_sighash_args()
         } else if let Some(transact_args) = self.transact_args {
             transact_args.sender_sighash_args()
+        } else {
+            unreachable!()
+        }
+    }
+
+    fn sender_lock_hash(&self) -> Byte32 {
+        if let Some(ref issue_args) = self.issue_args {
+            issue_args.sender_lock_hash()
+        } else if let Some(transact_args) = self.transact_args {
+            transact_args.sender_lock_hash()
         } else {
             unreachable!()
         }

@@ -9,7 +9,7 @@ use crate::utils::{
     printer::{OutputFormat, Printable},
 };
 use ckb_crypto::secp::{SECP256K1, Pubkey};
-use ckb_sdk::{constants::SIGHASH_TYPE_HASH, Address, AddressPayload, NetworkType};
+use ckb_sdk::{constants::SIGHASH_TYPE_HASH, Address, AddressPayload, NetworkType, HttpRpcClient};
 use ckb_types::{
     packed::{Byte32, Script},
     prelude::*,
@@ -17,11 +17,12 @@ use ckb_types::{
 };
 use clap::{App, Arg, ArgMatches, SubCommand};
 use std::collections::HashSet;
-use ckb_types::packed::{OutPoint, Bytes};
+use ckb_types::packed::{OutPoint, Bytes, BytesVec, CellDep};
 use crate::utils::arg_parser::PubkeyHexParser;
 use secp256k1::PublicKey;
 use sha2::Digest;
 use crate::utils::other::serialize_signature;
+use crate::subcommands::forty::util::send_transaction;
 
 impl<'a> CliSubCommand for FortySubCommand<'a> {
     fn process(
@@ -70,18 +71,20 @@ impl<'a> FortySubCommand<'a> {
                 SubCommand::with_name("issue")
                     .about("Issue FT to admin self")
                     .arg(arg::privkey_path().required_unless(arg::from_account().b.name))
+                    .arg(arg::ft_out_point().required(true))
                     .arg(arg::amount().required(true))
-                    .arg(arg::nonce().required(true)),
-            )
+                    .arg(arg::nonce().required(true))
+        )
             .subcommand(
                 SubCommand::with_name("transfer")
                     .about("Transfer FT")
                     .arg(arg::privkey_path().required(true))
+                    .arg(arg::ft_out_point().required(true))
                     .arg(arg::out_point().required(true))
                     .arg(arg::pubkey().required(true))
                     .arg(arg::amount().required(true))
-                    .arg(arg::nonce().required(true)),
-            )
+                    .arg(arg::nonce().required(true))
+        )
     }
 }
 
@@ -89,11 +92,14 @@ impl<'a> FortySubCommand<'a> {
 //    pub(crate) lock_hash: Byte32,
 //}
 
+// TODO ft_code_hash can be fetch vis RPC
 pub(crate) struct IssueArgs {
     pub(crate) network_type: NetworkType,
     pub(crate) sender: PrivkeyWrapper,
     pub(crate) amount: u64,
     pub(crate) nonce: u64,
+    pub(crate) ft_out_point: OutPoint,
+    pub(crate) ft_code_hash: Byte32,
 }
 
 pub(crate) struct TransactArgs {
@@ -103,6 +109,8 @@ pub(crate) struct TransactArgs {
     pub(crate) amount: u64,
     pub(crate) nonce: u64,
     pub(crate) out_point: OutPoint,
+    pub(crate) ft_out_point: OutPoint,
+    pub(crate) ft_code_hash: Byte32,
 }
 
 impl IssueArgs {
@@ -113,8 +121,13 @@ impl IssueArgs {
             .map_err(|err| err.to_string())?;
         let nonce = m.value_of("nonce").expect("expect nonce").parse()
             .map_err(|err| err.to_string())?;
+        let ft_out_point: OutPoint = OutPointParser.from_matches(m, "ft-out-point")?;
+        let ft_code_hash: H256 = FixedHashParser::<H256>::default().from_matches(m, "ft-code-hash")?;
+
         Ok(Self {
             network_type,
+            ft_out_point,
+            ft_code_hash: Byte32::new(ft_code_hash.0),
             sender,
             amount,
             nonce,
@@ -150,18 +163,35 @@ impl IssueArgs {
     // encrypted_amount = receiver.pubkey.sign_recoverable()
     pub(crate) fn encrypted_amount(&self) -> Bytes {
         // As for command "issue", the sender and receiver are the same.
-        let receiver = &self.sender;
+//        let receiver = &self.sender;
 
         let preimage = format!("{},{}", self.amount, self.nonce);
-        let message = secp256k1::Message::from_slice(preimage.as_bytes())
-            .expect("Failed to convert FT preimage to secp256k1 message");
+        preimage.pack()
+//        let message = secp256k1::Message::from_slice(preimage.as_bytes())
+//            .expect("Failed to convert FT preimage to secp256k1 message");
+//
+//        // FIXME 我不知道如何用 pubkey 加密 preimage，先留个FIXME，先折腾其它的
+//        let builder: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
+//        let signature = builder.sign_recoverable(&message, receiver);
+//        let serialized_signature = serialize_signature(&signature);
+//        serialized_signature.pack()
+    }
 
-        // FIXME 我不知道如何用 pubkey 加密 preimage，先留个FIXME，先折腾其它的
-        let builder: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
-        let signature = builder.sign_recoverable(&message, receiver);
-        let serialized_signature = serialize_signature(&signature);
-        serialized_signature.pack()
-        // Bytes::from(serialized_signature[..].to_vec())
+    pub(crate) fn ft_output_data(&self) -> Bytes {
+        BytesVec::new_builder()
+            .push(self.amount_hash())
+            .push(self.encrypted_amount())
+            .build().as_bytes()
+    }
+
+    // 只有 IssueArgs 有 ft_lock_args()，因为可以从 privkey 里推导出来
+    // 至于 TRansactArgs，那应该从 input 的 type_script.args 里拿出来（其实直接拷贝整个 type_script 即可）
+    pub(crate) fn ft_lock_args(&self) -> H160 {
+        self.sender_sighash_args()
+    }
+
+    pub(crate) fn ft_code_hash(&self) -> Byte32 {
+        self.ft_code_hash.clone()
     }
 
     pub(crate) fn sender_address(&self) -> Address {
@@ -175,10 +205,17 @@ impl IssueArgs {
     pub(crate) fn sender_lock_hash(&self) -> Byte32 {
         self.receiver_lock_hash()
     }
+
+    pub(crate) fn ft_cell_dep(&self) -> CellDep {
+        CellDep::new_builder()
+            .out_point(self.ft_out_point.clone())
+            .build()
+    }
 }
 
 impl TransactArgs {
     fn from_matches(m: &ArgMatches, network_type: NetworkType) -> Result<Self, String> {
+        let ft_out_point: OutPoint = OutPointParser.from_matches(m, "ft-out-point");
         let sender: PrivkeyWrapper =
             PrivkeyPathParser.from_matches(m, "privkey-path")?.unwrap();
         let receiver = PubkeyHexParser.from_matches(m, "pubkey").unwrap();
@@ -187,6 +224,7 @@ impl TransactArgs {
         let nonce = m.value_of("nonce").expect("expect nonce").parse()
             .map_err(|err| err.to_string())?;
         let out_point: OutPoint = OutPointParser.from_matches(m, "out-point")?;
+        let ft_code_hash: H256 = FixedHashParser::<H256>::default().from_matches(m, "ft-code-hash")?;
         Ok(Self {
             network_type,
             sender,
@@ -194,6 +232,8 @@ impl TransactArgs {
             amount,
             nonce,
             out_point,
+            ft_out_point,
+            ft_code_hash: Byte32::new(ft_code_hash.0),
         })
     }
 
@@ -229,6 +269,52 @@ impl TransactArgs {
 
     pub(crate) fn sender_lock_hash(&self) -> Byte32 {
         Script::from(self.sender_address().payload()).calc_script_hash()
+    }
+
+    pub(crate) fn amount_hash(&self) -> Bytes {
+        let mut hasher = sha2::Sha256::new();
+        let preimage = format!("{},{}", self.amount, self.nonce);
+        hasher.input(preimage.as_bytes());
+        let result = hasher.result();
+        result.as_slice().pack()
+    }
+
+    // encrypted_amount = receiver.pubkey.sign_recoverable()
+    pub(crate) fn encrypted_amount(&self) -> Bytes {
+        // FIXME 我不知道如何用 pubkey 加密 preimage，先留个FIXME，先折腾其它的
+        // As for command "issue", the sender and receiver are the same.
+//        let receiver = &self.receiver;
+
+        let preimage = format!("{},{}", self.amount, self.nonce);
+        preimage.pack()
+//        let message = secp256k1::Message::from_slice(preimage.as_bytes())
+//            .expect("Failed to convert FT preimage to secp256k1 message");
+//
+//        // FIXME 我不知道如何用 pubkey 加密 preimage，先留个FIXME，先折腾其它的
+//        let builder: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
+//        let signature = builder.sign_recoverable(&message, receiver);
+//        let serialized_signature = serialize_signature(&signature);
+//        serialized_signature.pack()
+        // Bytes::from(serialized_signature[..].to_vec())
+    }
+
+    // OutputData Format: [ amount_hash, encrypted_amount ]
+    pub(crate) fn ft_output_data(&self) -> Bytes {
+        BytesVec::new_builder()
+            .push(self.amount_hash())
+            .push(self.encrypted_amount())
+            .build()
+            .as_bytes()
+    }
+
+    pub(crate) fn ft_code_hash(&self) -> Byte32 {
+        self.ft_code_hash.clone()
+    }
+
+    pub(crate) fn ft_cell_dep(&self) -> CellDep {
+        CellDep::new_builder()
+            .out_point(self.ft_out_point.clone())
+            .build()
     }
 }
 

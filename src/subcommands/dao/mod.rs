@@ -337,7 +337,7 @@ fn get_keystore_signer(key_store: KeyStore, account: H160, password: String) -> 
     })
 }
 
-fn take_by_out_points(
+pub fn take_by_out_points(
     cells: Vec<LiveCellInfo>,
     out_points: &[OutPoint],
 ) -> Result<Vec<LiveCellInfo>, String> {

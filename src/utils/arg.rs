@@ -224,3 +224,11 @@ pub fn out_point<'a, 'b>() -> Arg<'a, 'b> {
         .validator(|input| { OutPointParser.validate(input) })
         .help("out-point to specify a cell. Example: 0xd56ed5d4e8984701714de9744a533413f79604b3b91461e2265614829d2005d1-1")
 }
+
+pub fn ft_out_point<'a, 'b>() -> Arg<'a, 'b> {
+    Arg::with_name("ft-out-point")
+        .long("ft-out-point")
+        .takes_value(true)
+        .validator(|input| { OutPointParser.validate(input) })
+        .help("out-point points to FT binary cell. Example: 0xd56ed5d4e8984701714de9744a533413f79604b3b91461e2265614829d2005d1-1")
+}
